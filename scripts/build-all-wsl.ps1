@@ -7,10 +7,7 @@ param(
         "kernel",
         "rootfs",
         "refresh-rootfs",
-        "boot",
-        "pmos-kernel",
-        "pmos-contrast",
-        "pmos-mss-diag"
+        "boot"
     )]
     [string]$Mode = "all",
 
@@ -74,16 +71,6 @@ switch ($Mode) {
         Invoke-WslUser "$userPrefix bash scripts/02-build-kernel.sh"
         Invoke-WslRoot "$rootPrefix bash scripts/03-refresh-rootfs.sh"
         Invoke-WslUser "$userPrefix bash scripts/04-make-boot-image.sh"
-    }
-    "pmos-contrast" {
-        Invoke-WslUser "$userPrefix bash scripts/02-build-pmos-kernel-contrast.sh"
-        Invoke-WslRoot "$rootPrefix bash scripts/03-refresh-rootfs.sh"
-        Invoke-WslUser "$userPrefix bash scripts/04-make-boot-image.sh"
-    }
-    "pmos-mss-diag" {
-        Invoke-WslUser "$userPrefix PMOS_APPLY_DIAG_PATCHES=1 bash scripts/02-build-pmos-kernel-contrast.sh"
-        Invoke-WslRoot "$rootPrefix RAZER_MSS_DIAG_MANUAL=1 bash scripts/03-refresh-rootfs.sh"
-        Invoke-WslUser "$userPrefix bash scripts/04-make-boot-image.sh && echo pmos-mss-diag > 'output/$Profile/kernel.flavor' && mkdir -p '$workdir/output/$Profile' && echo pmos-mss-diag > '$workdir/output/$Profile/kernel.flavor'"
     }
     "rootfs" {
         Invoke-WslRoot "$rootPrefix bash scripts/03-build-rootfs.sh"

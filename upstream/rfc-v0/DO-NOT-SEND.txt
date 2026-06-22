@@ -1,4 +1,0 @@
-This RFC v0 bundle intentionally has no Signed-off-by tags and incomplete DT
-bindings. Do not send it. Review upstream/STATUS.md, rebase to the current
-maintainer tree, add schemas, pass checks, then let the human submitter add
-their own DCO sign-off.

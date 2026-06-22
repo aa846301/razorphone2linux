@@ -1,7 +1,7 @@
 #!/bin/bash
-# Produce an explicitly non-send-ready RFC v0 patch bundle from project files.
-# The human submitter must review, add bindings, rebase, test, and add their own
-# Signed-off-by before sending any patch.
+# Produce an explicitly non-send-ready RFC patch bundle from project files.
+# The human submitter must review, rebase, test, and add their own Signed-off-by
+# before sending any patch.
 
 set -euo pipefail
 
@@ -40,10 +40,11 @@ fi
 git -C "$RFC_TREE" config user.name "$AUTHOR_NAME"
 git -C "$RFC_TREE" config user.email "$AUTHOR_EMAIL"
 
-# 1/3: Experimental panel driver. Binding is deliberately not fabricated here;
-# upstream/STATUS.md records it as a blocker.
+# 1/3: Panel binding and driver.
 install -m 0644 "$PROJECT_DIR/panel-driver/panel-novatek-nt36830.c" \
     "$RFC_TREE/drivers/gpu/drm/panel/panel-novatek-nt36830.c"
+install -m 0644 "$PROJECT_DIR/panel-driver/novatek,nt36830.yaml" \
+    "$RFC_TREE/Documentation/devicetree/bindings/display/panel/novatek,nt36830.yaml"
 if ! grep -q DRM_PANEL_NOVATEK_NT36830 "$RFC_TREE/drivers/gpu/drm/panel/Kconfig"; then
     printf '\nconfig DRM_PANEL_NOVATEK_NT36830\n' >> "$RFC_TREE/drivers/gpu/drm/panel/Kconfig"
     printf '\ttristate "Novatek NT36830 panel"\n' >> "$RFC_TREE/drivers/gpu/drm/panel/Kconfig"
@@ -58,32 +59,42 @@ if ! grep -q panel-novatek-nt36830 "$RFC_TREE/drivers/gpu/drm/panel/Makefile"; t
     printf 'obj-$(CONFIG_DRM_PANEL_NOVATEK_NT36830) += panel-novatek-nt36830.o\n' \
         >> "$RFC_TREE/drivers/gpu/drm/panel/Makefile"
 fi
-git -C "$RFC_TREE" add drivers/gpu/drm/panel
-git -C "$RFC_TREE" commit -m "drm/panel: add experimental Novatek NT36830 support" \
-    -m "Add an initial dual-DSI DSC panel driver for the Razer Phone 2." \
-    -m "This is an RFC draft pending binding and native scanout validation." \
+git -C "$RFC_TREE" add drivers/gpu/drm/panel \
+    Documentation/devicetree/bindings/display/panel/novatek,nt36830.yaml
+git -C "$RFC_TREE" commit -m "drm/panel: add Novatek NT36830 support" \
+    -m "Add a binding and dual-DSI DSC panel driver for the Razer Phone 2." \
+    -m "This is an RFC draft pending physical native scanout validation." \
     -m "Assisted-by: Codex:gpt-5"
 
-# 2/3: Functional WiFi/MSS delta.
+# 2/3: Functional WiFi/MSS delta and its proposed binding.
+git -C "$RFC_TREE" apply \
+    "$PROJECT_DIR/kernel-patches/0004-dt-bindings-remoteproc-document-fih-nv-memory.patch"
 git -C "$RFC_TREE" apply \
     "$PROJECT_DIR/kernel-patches/0001-remoteproc-qcom-share-razer-fih-nv-with-mss.patch"
-git -C "$RFC_TREE" add drivers/remoteproc/qcom_q6v5_mss.c
+git -C "$RFC_TREE" add drivers/remoteproc/qcom_q6v5_mss.c \
+    Documentation/devicetree/bindings/remoteproc/qcom,msm8996-mss-pil.yaml
 git -C "$RFC_TREE" commit -m "remoteproc: qcom_q6v5_mss: share optional FIH NV memory" \
     -m "Share the optional Razer/FIH NV reserved-memory region with MSS." \
-    -m "The DT ABI still requires maintainer review and documentation." \
+    -m "Document the proposed DT property for maintainer review." \
     -m "Assisted-by: Codex:gpt-5"
 
 # 3/3: Board DTS last, as required by DT submission guidance.
+git -C "$RFC_TREE" apply \
+    "$PROJECT_DIR/kernel-patches/0002-dt-bindings-add-razer-vendor-prefix.patch"
+git -C "$RFC_TREE" apply \
+    "$PROJECT_DIR/kernel-patches/0003-dt-bindings-arm-qcom-add-razer-phone-2.patch"
 install -m 0644 "$PROJECT_DIR/dts/sdm845-razer-aura.dts" \
     "$RFC_TREE/arch/arm64/boot/dts/qcom/sdm845-razer-aura.dts"
 if ! grep -q sdm845-razer-aura "$RFC_TREE/arch/arm64/boot/dts/qcom/Makefile"; then
     printf 'dtb-$(CONFIG_ARCH_QCOM) += sdm845-razer-aura.dtb\n' \
         >> "$RFC_TREE/arch/arm64/boot/dts/qcom/Makefile"
 fi
-git -C "$RFC_TREE" add arch/arm64/boot/dts/qcom
+git -C "$RFC_TREE" add arch/arm64/boot/dts/qcom \
+    Documentation/devicetree/bindings/arm/qcom.yaml \
+    Documentation/devicetree/bindings/vendor-prefixes.yaml
 git -C "$RFC_TREE" commit -m "arm64: dts: qcom: add initial Razer Phone 2 support" \
     -m "Add an RFC board description for the SDM845-based Razer Phone 2." \
-    -m "Display remains experimental and the DTS requires schema cleanup." \
+    -m "Add the board compatible and Razer vendor prefix bindings." \
     -m "Assisted-by: Codex:gpt-5"
 
 rm -rf "$OUT_DIR"
@@ -108,9 +119,9 @@ cp -f "$PROJECT_DIR/upstream/0000-cover-letter-rfc.md" \
 )
 
 cat > "$OUT_DIR/DO-NOT-SEND.txt" <<'EOF'
-This RFC v0 bundle intentionally has no Signed-off-by tags and incomplete DT
-bindings. Do not send it. Review upstream/STATUS.md, rebase to the current
-maintainer tree, add schemas, pass checks, then let the human submitter add
+This RFC bundle intentionally has no Signed-off-by tags. Do not send it without
+review. Read upstream/STATUS.md, rebase to the current maintainer tree, pass all
+checks, validate physical display scanout, then let the human submitter add
 their own DCO sign-off.
 EOF
 

@@ -1,0 +1,15 @@
+From: Razer Phone 2 Linux Port <razerphone2linux@example.invalid>
+Subject: [PATCH] dt-bindings: vendor-prefixes: add Razer
+
+diff --git a/Documentation/devicetree/bindings/vendor-prefixes.yaml b/Documentation/devicetree/bindings/vendor-prefixes.yaml
+--- a/Documentation/devicetree/bindings/vendor-prefixes.yaml
++++ b/Documentation/devicetree/bindings/vendor-prefixes.yaml
+@@ -1369,6 +1369,8 @@ patternProperties:
+     description: Raspberry Pi Foundation
+   "^raumfeld,.*":
+     description: Raumfeld GmbH
++  "^razer,.*":
++    description: Razer Inc.
+   "^raydium,.*":
+     description: Raydium Semiconductor Corp.
+   "^raystar,.*":

@@ -9,10 +9,10 @@ bootloader-provided framebuffer are usable. WiFi has also been demonstrated,
 but currently depends on a Razer/FIH NV reserved-memory handoff plus Qualcomm
 userspace services and is kept separate from the minimal board submission.
 
-The built-in NT36830 panel is dual-DSI with DSC. A driver has been generated
-and hand-adapted from the factory DTBO, but native DRM scanout is still
-experimental. The first board patch should therefore leave MDSS disabled and
-must not claim native panel support.
+The built-in NT36830 panel is dual-DSI with DSC. A native DRM panel driver,
+binding, 60/120 Hz modes and the board display graph are implemented and pass
+compile/link and schema checks. Physical DRM scanout is not yet validated, so
+the first board submission should remain conservative about display support.
 
 This RFC is intended to establish the acceptable DT representation and patch
 split before a send-ready v1. Known gaps and test status are documented in
@@ -34,6 +34,8 @@ Assisted-by: Codex:gpt-5
 
 ---
 
-Base tree: to be selected from the current Qualcomm maintainer tree.
-Testing: Razer Phone 2 hardware, clean `6.16.0-rc2-sdm845` development build.
-Not yet tested: dt_binding_check, full dtbs_check, native NT36830 scanout.
+Development base: sdm845/7.1-dev at 85f1df2a4ec71d7a91dd95a7a49f889d1595ffa8.
+Send base: to be selected from the current Qualcomm maintainer tree.
+Testing: full base/printer builds; panel compile/link; panel dt_binding_check;
+Razer DTB with CHECK_DTBS=y.
+Not yet tested: native NT36830 scanout on physical hardware.

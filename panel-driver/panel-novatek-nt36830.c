@@ -26,6 +26,7 @@
 
 #include <drm/display/drm_dsc.h>
 #include <drm/display/drm_dsc_helper.h>
+#include <drm/drm_connector.h>
 #include <drm/drm_mipi_dsi.h>
 #include <drm/drm_modes.h>
 #include <drm/drm_panel.h>
@@ -40,15 +41,8 @@
  * Macro to send a DCS command to both DSI interfaces for dual-DSI panels.
  * Based on panel-novatek-nt36523.c mipi_dsi_dual_dcs_write_seq_multi.
  */
-#define nt36830_dual_dcs_write_seq(dsi_ctx, ctx, cmd, seq...)                  \
-	do {                                                                   \
-		(dsi_ctx).dsi = (ctx)->dsi0;                                   \
-		mipi_dsi_dcs_write_seq_multi(&(dsi_ctx), cmd, seq);            \
-		if ((ctx)->dsi1) {                                             \
-			(dsi_ctx).dsi = (ctx)->dsi1;                           \
-			mipi_dsi_dcs_write_seq_multi(&(dsi_ctx), cmd, seq);    \
-		}                                                              \
-	} while (0)
+#define nt36830_dual_dcs_write_seq(dsi_ctx, dsi0, dsi1, cmd, seq...)           \
+	mipi_dsi_dual_dcs_write_seq_multi(&(dsi_ctx), dsi0, dsi1, cmd, seq)
 
 struct nt36830_panel {
 	struct drm_panel panel;
@@ -57,6 +51,7 @@ struct nt36830_panel {
 	struct regulator_bulk_data supplies[NT36830_NUM_SUPPLIES];
 	struct gpio_desc *reset_gpio;
 	struct drm_dsc_config dsc;
+	enum drm_panel_orientation orientation;
 };
 
 static const struct regulator_bulk_data nt36830_supplies[NT36830_NUM_SUPPLIES] = {
@@ -111,259 +106,259 @@ static int nt36830_on(struct nt36830_panel *ctx)
 	/* --- Pre-init: DDIC diagnostic/calibration reset --- */
 
 	/* Page D0 */
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xff, 0xd0);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x75, 0x40);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xf1, 0x40);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xff, 0xd0);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x75, 0x40);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xf1, 0x40);
 	mipi_dsi_msleep(&dsi_ctx, 10);
 
 	/* Page 10 - calibration params */
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xff, 0x10);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x2c,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xff, 0x10);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x2c,
 				   0x01, 0x02, 0x04, 0x08, 0x10);
 	mipi_dsi_msleep(&dsi_ctx, 10);
 
 	/* Page D0 - cleanup */
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xff, 0xd0);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x75, 0x00);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xf1, 0x00);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xff, 0xd0);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x75, 0x00);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xf1, 0x00);
 	mipi_dsi_msleep(&dsi_ctx, 10);
 
 	/* --- Page 10: DSC and base configuration --- */
 
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xff, 0x10);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xfb, 0x01);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xba, 0x03);  /* DSC enable */
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xbc, 0x00);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xc0, 0x83);  /* DSC control */
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xff, 0x10);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xfb, 0x01);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xba, 0x03);  /* DSC enable */
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xbc, 0x00);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xc0, 0x83);  /* DSC control */
 
 	/* DSC PPS parameters (DDIC internal decoder config via C1) */
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xc1,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xc1,
 				   0xab, 0x28, 0x00, 0x08, 0x02, 0x00,
 				   0x02, 0x68, 0x00, 0xd5, 0x00, 0x0a,
 				   0x0d, 0xb7, 0x09, 0x89);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xc2, 0x10, 0xf0);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xc2, 0x10, 0xf0);
 
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xd5, 0x00);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xd6, 0x00);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xde, 0x00);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xe1, 0x00);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xe5, 0x01);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xbb, 0x10);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xf6, 0x70);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xf7, 0x80);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xbe,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xd5, 0x00);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xd6, 0x00);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xde, 0x00);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xe1, 0x00);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xe5, 0x01);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xbb, 0x10);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xf6, 0x70);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xf7, 0x80);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xbe,
 				   0x00, 0x10, 0x00, 0x10);
 
 	/* TE (Tearing Effect) on VBLANK */
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x35, 0x00);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x35, 0x00);
 
 	/* --- Page 20: Panel configuration --- */
 
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xff, 0x20);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xfb, 0x01);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x5d, 0x00);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x5e, 0x14);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x5f, 0xeb);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x87, 0x02);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x96, 0x00);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x97, 0x6d);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x98, 0x6d);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xae, 0x00);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xff, 0x20);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xfb, 0x01);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x5d, 0x00);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x5e, 0x14);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x5f, 0xeb);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x87, 0x02);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x96, 0x00);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x97, 0x6d);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x98, 0x6d);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xae, 0x00);
 
 	/* --- Page 21: Color calibration --- */
 
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xff, 0x21);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xfb, 0x01);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xe0, 0x24);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xe1,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xff, 0x21);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xfb, 0x01);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xe0, 0x24);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xe1,
 				   0x42, 0x0a, 0x86, 0x53, 0x1b, 0x97,
 				   0x0a, 0x86, 0x42, 0x1b, 0x97, 0x53);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xe2,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xe2,
 				   0x86, 0x42, 0x0a, 0x97, 0x53, 0x1b,
 				   0x0a, 0x86, 0x42, 0x1b, 0x97, 0x53);
 
 	/* --- Page 20: Gamma LUT (Red channel) --- */
 
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xff, 0x20);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xfb, 0x01);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xb0,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xff, 0x20);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xfb, 0x01);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xb0,
 				   0x00, 0x01, 0x00, 0x21, 0x00, 0x43,
 				   0x00, 0x5b, 0x00, 0x72, 0x00, 0x83,
 				   0x00, 0x96, 0x00, 0xa5);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xb1,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xb1,
 				   0x00, 0xb2, 0x00, 0xe1, 0x01, 0x09,
 				   0x01, 0x4b, 0x01, 0x80, 0x01, 0xd3,
 				   0x02, 0x16, 0x02, 0x19);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xb2,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xb2,
 				   0x02, 0x58, 0x02, 0x9b, 0x02, 0xc4,
 				   0x02, 0xfb, 0x03, 0x1f, 0x03, 0x4b,
 				   0x03, 0x5b, 0x03, 0x69);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xb3,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xb3,
 				   0x03, 0x7c, 0x03, 0x93, 0x03, 0xb7,
 				   0x03, 0xcf, 0x03, 0xe1, 0x03, 0xe6,
 				   0x00, 0x00);
 
 	/* Gamma LUT (Green channel) */
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xb4,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xb4,
 				   0x00, 0xc0, 0x00, 0xca, 0x00, 0xd5,
 				   0x00, 0xe0, 0x00, 0xea, 0x00, 0xf4,
 				   0x00, 0xfd, 0x01, 0x06);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xb5,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xb5,
 				   0x01, 0x0f, 0x01, 0x2f, 0x01, 0x4b,
 				   0x01, 0x7b, 0x01, 0xa6, 0x01, 0xec,
 				   0x02, 0x28, 0x02, 0x2a);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xb6,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xb6,
 				   0x02, 0x65, 0x02, 0xa6, 0x02, 0xce,
 				   0x03, 0x04, 0x03, 0x27, 0x03, 0x51,
 				   0x03, 0x62, 0x03, 0x71);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xb7,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xb7,
 				   0x03, 0x86, 0x03, 0x9e, 0x03, 0xb6,
 				   0x03, 0xcd, 0x03, 0xdf, 0x03, 0xe6,
 				   0x00, 0xbf);
 
 	/* Gamma LUT (Blue channel) */
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xb8,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xb8,
 				   0x01, 0x12, 0x01, 0x18, 0x01, 0x20,
 				   0x01, 0x27, 0x01, 0x2e, 0x01, 0x35,
 				   0x01, 0x3b, 0x01, 0x42);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xb9,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xb9,
 				   0x01, 0x48, 0x01, 0x61, 0x01, 0x77,
 				   0x01, 0x9e, 0x01, 0xc2, 0x02, 0x00,
 				   0x02, 0x37, 0x02, 0x39);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xba,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xba,
 				   0x02, 0x71, 0x02, 0xb0, 0x02, 0xd9,
 				   0x03, 0x11, 0x03, 0x37, 0x03, 0x5c,
 				   0x03, 0x6e, 0x03, 0x81);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xbb,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xbb,
 				   0x03, 0x9d, 0x03, 0xb6, 0x03, 0xca,
 				   0x03, 0xda, 0x03, 0xe4, 0x03, 0xe6,
 				   0x01, 0x11);
 
 	/* --- Page 21: Gamma LUT (mirror for page 21) --- */
 
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xff, 0x21);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xfb, 0x01);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xff, 0x21);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xfb, 0x01);
 
 	/* Red */
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xb0,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xb0,
 				   0x00, 0x01, 0x00, 0x21, 0x00, 0x43,
 				   0x00, 0x5b, 0x00, 0x72, 0x00, 0x83,
 				   0x00, 0x96, 0x00, 0xa5);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xb1,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xb1,
 				   0x00, 0xb2, 0x00, 0xe1, 0x01, 0x09,
 				   0x01, 0x4b, 0x01, 0x80, 0x01, 0xd3,
 				   0x02, 0x16, 0x02, 0x19);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xb2,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xb2,
 				   0x02, 0x58, 0x02, 0x9b, 0x02, 0xc4,
 				   0x02, 0xfb, 0x03, 0x1f, 0x03, 0x4b,
 				   0x03, 0x5b, 0x03, 0x69);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xb3,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xb3,
 				   0x03, 0x7c, 0x03, 0x93, 0x03, 0xb7,
 				   0x03, 0xcf, 0x03, 0xe1, 0x03, 0xe6,
 				   0x00, 0x00);
 	/* Green */
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xb4,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xb4,
 				   0x00, 0xc0, 0x00, 0xca, 0x00, 0xd5,
 				   0x00, 0xe0, 0x00, 0xea, 0x00, 0xf4,
 				   0x00, 0xfd, 0x01, 0x06);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xb5,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xb5,
 				   0x01, 0x0f, 0x01, 0x2f, 0x01, 0x4b,
 				   0x01, 0x7b, 0x01, 0xa6, 0x01, 0xec,
 				   0x02, 0x28, 0x02, 0x2a);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xb6,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xb6,
 				   0x02, 0x65, 0x02, 0xa6, 0x02, 0xce,
 				   0x03, 0x04, 0x03, 0x27, 0x03, 0x51,
 				   0x03, 0x62, 0x03, 0x71);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xb7,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xb7,
 				   0x03, 0x86, 0x03, 0x9e, 0x03, 0xb6,
 				   0x03, 0xcd, 0x03, 0xdf, 0x03, 0xe6,
 				   0x00, 0xbf);
 	/* Blue */
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xb8,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xb8,
 				   0x01, 0x12, 0x01, 0x18, 0x01, 0x20,
 				   0x01, 0x27, 0x01, 0x2e, 0x01, 0x35,
 				   0x01, 0x3b, 0x01, 0x42);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xb9,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xb9,
 				   0x01, 0x48, 0x01, 0x61, 0x01, 0x77,
 				   0x01, 0x9e, 0x01, 0xc2, 0x02, 0x00,
 				   0x02, 0x37, 0x02, 0x39);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xba,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xba,
 				   0x02, 0x71, 0x02, 0xb0, 0x02, 0xd9,
 				   0x03, 0x11, 0x03, 0x37, 0x03, 0x5c,
 				   0x03, 0x6e, 0x03, 0x81);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xbb,
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xbb,
 				   0x03, 0x9d, 0x03, 0xb6, 0x03, 0xca,
 				   0x03, 0xda, 0x03, 0xe4, 0x03, 0xe6,
 				   0x01, 0x11);
 
 	/* --- Page 24: GIP (Gate IC in Panel) timing --- */
 
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xff, 0x24);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xfb, 0x01);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x14, 0x00);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x15, 0x10);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x16, 0x00);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x17, 0x10);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xb4, 0x00);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xb6, 0x30);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x18, 0x02);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x1b, 0x00);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x1c, 0x0e);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x1d, 0x00);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x1e, 0x10);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x1f, 0x00);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x22, 0x00);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x23, 0x0e);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x24, 0x0f);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x25, 0xa8);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xff, 0x24);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xfb, 0x01);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x14, 0x00);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x15, 0x10);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x16, 0x00);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x17, 0x10);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xb4, 0x00);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xb6, 0x30);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x18, 0x02);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x1b, 0x00);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x1c, 0x0e);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x1d, 0x00);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x1e, 0x10);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x1f, 0x00);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x22, 0x00);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x23, 0x0e);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x24, 0x0f);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x25, 0xa8);
 
 	/* --- Page 26 --- */
 
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xff, 0x26);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xfb, 0x01);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x60, 0x00);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x62, 0x00);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x40, 0x00);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xff, 0x26);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xfb, 0x01);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x60, 0x00);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x62, 0x00);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x40, 0x00);
 
 	/* --- Page 28 --- */
 
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xff, 0x28);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xfb, 0x01);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x91, 0x02);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xff, 0x28);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xfb, 0x01);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x91, 0x02);
 
 	/* --- Page E0: DSC setting --- */
 
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xff, 0xe0);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xfb, 0x01);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x48, 0x81);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x8e, 0x09);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xff, 0xe0);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xfb, 0x01);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x48, 0x81);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x8e, 0x09);
 
 	/* --- Page F0: VESA DSC setting --- */
 
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xff, 0xf0);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xfb, 0x01);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x33, 0x20);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x34, 0x35);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xff, 0xf0);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xfb, 0x01);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x33, 0x20);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x34, 0x35);
 
 	/* --- Page 23 --- */
 
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xff, 0x23);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xfb, 0x01);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x06, 0x22);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xff, 0x23);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xfb, 0x01);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x06, 0x22);
 
 	/* --- Page 10: Final configuration --- */
 
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xff, 0x10);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xfb, 0x01);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xff, 0x10);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xfb, 0x01);
 
 	/* Brightness: 0x0FFF = 4095 (max) */
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x51, 0x0f, 0xff);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x51, 0x0f, 0xff);
 	/* CABC mode 3 */
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x55, 0x03);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x55, 0x03);
 	/* Backlight control */
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0x53, 0x2c);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0x53, 0x2c);
 	/* VFP control */
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xb1, 0x04);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xb1, 0x04);
 
 	/* Sleep Out (0x11), wait 120ms */
 	dsi_ctx.dsi = ctx->dsi0;
@@ -394,9 +389,9 @@ static int nt36830_off(struct nt36830_panel *ctx)
 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi0 };
 
 	/* Page 10 */
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xff, 0x10);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xfb, 0x01);
-	nt36830_dual_dcs_write_seq(dsi_ctx, ctx, 0xbc, 0x00);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xff, 0x10);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xfb, 0x01);
+	nt36830_dual_dcs_write_seq(dsi_ctx, ctx->dsi0, ctx->dsi1, 0xbc, 0x00);
 
 	/* Display Off (0x28), wait 34ms */
 	dsi_ctx.dsi = ctx->dsi0;
@@ -456,7 +451,7 @@ static int nt36830_unprepare(struct drm_panel *panel)
 }
 
 /*
- * Display mode: 1440x2560 @ 60Hz
+ * Display modes: 1440x2560 @ 60/120Hz
  *
  * From official DTS timing@0:
  *   Per DSI: 720x2560, hfp=20, hbp=12, hpw=8, vfp=16, vbp=14, vpw=2
@@ -471,30 +466,75 @@ static int nt36830_unprepare(struct drm_panel *panel)
  *
  * Physical size: 71mm x 126mm (from DTS).
  */
-static const struct drm_display_mode nt36830_mode = {
-	.clock = 236390,
-	.hdisplay = 1440,
-	.hsync_start = 1440 + 40,
-	.hsync_end = 1440 + 40 + 16,
-	.htotal = 1440 + 40 + 16 + 24,
-	.vdisplay = 2560,
-	.vsync_start = 2560 + 16,
-	.vsync_end = 2560 + 16 + 2,
-	.vtotal = 2560 + 16 + 2 + 14,
-	.width_mm = 71,
-	.height_mm = 126,
+static const struct drm_display_mode nt36830_modes[] = {
+	{
+		.clock = 236390,
+		.hdisplay = 1440,
+		.hsync_start = 1440 + 40,
+		.hsync_end = 1440 + 40 + 16,
+		.htotal = 1440 + 40 + 16 + 24,
+		.vdisplay = 2560,
+		.vsync_start = 2560 + 16,
+		.vsync_end = 2560 + 16 + 2,
+		.vtotal = 2560 + 16 + 2 + 14,
+		.width_mm = 71,
+		.height_mm = 126,
+	},
+	{
+		.clock = 472781,
+		.hdisplay = 1440,
+		.hsync_start = 1440 + 40,
+		.hsync_end = 1440 + 40 + 16,
+		.htotal = 1440 + 40 + 16 + 24,
+		.vdisplay = 2560,
+		.vsync_start = 2560 + 16,
+		.vsync_end = 2560 + 16 + 2,
+		.vtotal = 2560 + 16 + 2 + 14,
+		.width_mm = 71,
+		.height_mm = 126,
+	},
 };
 
 static int nt36830_get_modes(struct drm_panel *panel,
 			     struct drm_connector *connector)
 {
-	return drm_connector_helper_get_modes_fixed(connector, &nt36830_mode);
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(nt36830_modes); i++) {
+		struct drm_display_mode *mode;
+
+		mode = drm_mode_duplicate(connector->dev, &nt36830_modes[i]);
+		if (!mode)
+			return -ENOMEM;
+
+		mode->type = DRM_MODE_TYPE_DRIVER;
+		if (i == 0)
+			mode->type |= DRM_MODE_TYPE_PREFERRED;
+
+		drm_mode_set_name(mode);
+		drm_mode_probed_add(connector, mode);
+	}
+
+	connector->display_info.width_mm = nt36830_modes[0].width_mm;
+	connector->display_info.height_mm = nt36830_modes[0].height_mm;
+	connector->display_info.bpc = 10;
+
+	return ARRAY_SIZE(nt36830_modes);
+}
+
+static enum drm_panel_orientation
+nt36830_get_orientation(struct drm_panel *panel)
+{
+	struct nt36830_panel *ctx = to_nt36830(panel);
+
+	return ctx->orientation;
 }
 
 static const struct drm_panel_funcs nt36830_panel_funcs = {
 	.prepare = nt36830_prepare,
 	.unprepare = nt36830_unprepare,
 	.get_modes = nt36830_get_modes,
+	.get_orientation = nt36830_get_orientation,
 };
 
 /*
@@ -503,33 +543,37 @@ static const struct drm_panel_funcs nt36830_panel_funcs = {
  */
 static int nt36830_bl_update_status(struct backlight_device *bl)
 {
-	struct mipi_dsi_device *dsi = bl_get_data(bl);
+	struct nt36830_panel *ctx = bl_get_data(bl);
+	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi0 };
 	u16 brightness = backlight_get_brightness(bl);
-	int ret;
+	u8 payload[] = {
+		MIPI_DCS_SET_DISPLAY_BRIGHTNESS,
+		brightness >> 8,
+		brightness & 0xff,
+	};
 
-	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
-	ret = mipi_dsi_dcs_set_display_brightness_large(dsi, brightness);
-	if (ret < 0)
-		return ret;
-	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+	mipi_dsi_dual_dcs_write_buffer_multi(&dsi_ctx, ctx->dsi0, ctx->dsi1,
+					     payload, sizeof(payload));
 
-	return 0;
+	return dsi_ctx.accum_err;
 }
 
 static const struct backlight_ops nt36830_bl_ops = {
 	.update_status = nt36830_bl_update_status,
 };
 
-static struct backlight_device *nt36830_create_backlight(struct mipi_dsi_device *dsi)
+static struct backlight_device *
+nt36830_create_backlight(struct nt36830_panel *ctx)
 {
-	struct device *dev = &dsi->dev;
+	struct device *dev = &ctx->dsi0->dev;
 	const struct backlight_properties props = {
 		.type = BACKLIGHT_RAW,
 		.brightness = 2048,
 		.max_brightness = 4095,
+		.scale = BACKLIGHT_SCALE_NON_LINEAR,
 	};
 
-	return devm_backlight_device_register(dev, dev_name(dev), dev, dsi,
+	return devm_backlight_device_register(dev, dev_name(dev), dev, ctx,
 					      &nt36830_bl_ops, &props);
 }
 
@@ -562,7 +606,9 @@ static void nt36830_init_dsc(struct nt36830_panel *ctx)
 
 	dsc->slice_height = 8;
 	dsc->slice_width = 720;
-	dsc->slice_count = 2;          /* 1 per DSI x 2 DSI = 2 total */
+	dsc->slice_count = 1;          /* one 720-pixel slice per DSI interface */
+	dsc->pic_width = 720;
+	dsc->pic_height = 2560;
 
 	dsc->bits_per_component = 10;
 	dsc->bits_per_pixel = 8 << 4;  /* 8.0 bpp in 4.4 fixed-point */
@@ -620,7 +666,7 @@ static int nt36830_probe(struct mipi_dsi_device *dsi)
 			return dev_err_probe(dev, -EPROBE_DEFER,
 					     "Cannot find secondary DSI host\n");
 
-		dsi1 = mipi_dsi_device_register_full(host, &info);
+		dsi1 = devm_mipi_dsi_device_register_full(dev, host, &info);
 		if (IS_ERR(dsi1))
 			return dev_err_probe(dev, PTR_ERR(dsi1),
 					     "Cannot register secondary DSI device\n");
@@ -646,6 +692,10 @@ static int nt36830_probe(struct mipi_dsi_device *dsi)
 	ctx->dsi0 = dsi;
 	mipi_dsi_set_drvdata(dsi, ctx);
 
+	ret = of_drm_get_panel_orientation(dev->of_node, &ctx->orientation);
+	if (ret < 0)
+		return dev_err_probe(dev, ret, "Failed to get panel orientation\n");
+
 	dsi->lanes = 4;
 	dsi->format = MIPI_DSI_FMT_RGB888;
 	dsi->mode_flags = MIPI_DSI_MODE_LPM |
@@ -668,7 +718,7 @@ static int nt36830_probe(struct mipi_dsi_device *dsi)
 	ctx->panel.prepare_prev_first = true;
 
 	/* Create backlight device */
-	ctx->panel.backlight = nt36830_create_backlight(dsi);
+	ctx->panel.backlight = nt36830_create_backlight(ctx);
 	if (IS_ERR(ctx->panel.backlight))
 		return dev_err_probe(dev, PTR_ERR(ctx->panel.backlight),
 				     "Failed to create backlight\n");
@@ -676,7 +726,7 @@ static int nt36830_probe(struct mipi_dsi_device *dsi)
 	drm_panel_add(&ctx->panel);
 
 	/* Attach primary DSI */
-	ret = mipi_dsi_attach(dsi);
+	ret = devm_mipi_dsi_attach(dev, dsi);
 	if (ret < 0) {
 		dev_err(dev, "Failed to attach to DSI0: %d\n", ret);
 		drm_panel_remove(&ctx->panel);
@@ -685,10 +735,9 @@ static int nt36830_probe(struct mipi_dsi_device *dsi)
 
 	/* Attach secondary DSI */
 	if (ctx->dsi1) {
-		ret = mipi_dsi_attach(ctx->dsi1);
+		ret = devm_mipi_dsi_attach(dev, ctx->dsi1);
 		if (ret < 0) {
 			dev_err(dev, "Failed to attach to DSI1: %d\n", ret);
-			mipi_dsi_detach(dsi);
 			drm_panel_remove(&ctx->panel);
 			return ret;
 		}
@@ -703,22 +752,12 @@ static int nt36830_probe(struct mipi_dsi_device *dsi)
 static void nt36830_remove(struct mipi_dsi_device *dsi)
 {
 	struct nt36830_panel *ctx = mipi_dsi_get_drvdata(dsi);
-	int ret;
-
-	if (ctx->dsi1) {
-		mipi_dsi_detach(ctx->dsi1);
-		mipi_dsi_device_unregister(ctx->dsi1);
-	}
-
-	ret = mipi_dsi_detach(dsi);
-	if (ret < 0)
-		dev_err(&dsi->dev, "Failed to detach from DSI host: %d\n", ret);
 
 	drm_panel_remove(&ctx->panel);
 }
 
 static const struct of_device_id nt36830_of_match[] = {
-	{ .compatible = "razer,aura-nt36830-panel" },
+	{ .compatible = "razer,aura-nt36830" },
 	{ .compatible = "novatek,nt36830" },
 	{ /* sentinel */ }
 };

@@ -1,0 +1,19 @@
+From: Razer Phone 2 Linux Port <razerphone2linux@example.invalid>
+Subject: [PATCH] dt-bindings: remoteproc: document FIH NV memory region
+
+diff --git a/Documentation/devicetree/bindings/remoteproc/qcom,msm8996-mss-pil.yaml b/Documentation/devicetree/bindings/remoteproc/qcom,msm8996-mss-pil.yaml
+--- a/Documentation/devicetree/bindings/remoteproc/qcom,msm8996-mss-pil.yaml
++++ b/Documentation/devicetree/bindings/remoteproc/qcom,msm8996-mss-pil.yaml
+@@ -125,6 +125,12 @@ properties:
+       - description: Modem reserved region
+       - description: Metadata reserved region
+ 
++  qcom,fih-nv-memory-region:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description:
++      Reserved FIH modem NV memory which must remain shared between HLOS and
++      MSS_MSA while the modem image is running.
++
+   firmware-name:
+     items:
+       - description: Name of MBA firmware

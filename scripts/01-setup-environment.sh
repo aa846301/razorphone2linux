@@ -63,11 +63,16 @@ else
         }
     fi
 
+    if ! command -v dt-doc-validate &>/dev/null; then
+        echo "Installing DeviceTree schema validator..."
+        python3 -m pip install --user --break-system-packages dtschema yamllint
+    fi
+
     echo "[1/5] Build dependencies installed."
 fi
 
 for required in aarch64-linux-gnu-gcc git dtc debootstrap qemu-aarch64-static \
-        rsync cpio img2simg mkbootimg 7z zerofree; do
+        rsync cpio img2simg mkbootimg 7z zerofree dt-doc-validate; do
     if ! command -v "$required" >/dev/null 2>&1; then
         echo "ERROR: required tool is missing: $required" >&2
         echo "Rerun without RAZER_SKIP_APT=1 after sudo access is available." >&2
@@ -96,12 +101,16 @@ if [ ! -d "$KERNEL_DIR" ]; then
 else
     current="$(git -C "$KERNEL_DIR" rev-parse HEAD)"
     if [ "$current" != "$KERNEL_COMMIT" ]; then
-        echo "ERROR: existing kernel checkout is at $current"
-        echo "Expected pinned commit: $KERNEL_COMMIT"
-        echo "Move the old checkout aside, then rerun this script."
-        exit 1
+        if [ -n "$(git -C "$KERNEL_DIR" status --porcelain)" ]; then
+            echo "ERROR: existing kernel checkout has uncommitted changes."
+            echo "Clean or move it aside before switching kernel baselines."
+            exit 1
+        fi
+        echo "Updating clean kernel checkout from $current to $KERNEL_COMMIT..."
+        git -C "$KERNEL_DIR" fetch --depth=1 origin "$KERNEL_COMMIT"
+        git -C "$KERNEL_DIR" checkout --detach "$KERNEL_COMMIT"
     fi
-    echo "Kernel checkout already uses pinned commit $KERNEL_COMMIT."
+    echo "Kernel checkout uses pinned $KERNEL_BRANCH commit $KERNEL_COMMIT."
 fi
 
 # -------------------------------------------------------

@@ -57,17 +57,17 @@ USB CDC ACM serial gadget (`ttyGS0`) is also enabled for USB serial access.
 
 HelixScreen is installed in `/home/klipper/helixscreen` and starts through
 `helixscreen.service`. The rootfs forces `HELIX_DISPLAY_BACKEND=fbdev` so the
-UI uses the bootloader framebuffer path instead of requiring MDSS/DSI panel
-bring-up.
+known-good 6.16 recovery image can use the bootloader framebuffer. The 7.1
+development kernel also contains the native NT36830 dual-DSI/DSC driver.
 
 Moonraker listens on `localhost:7125`; Klipper and Moonraker are enabled as
 systemd services.
 
 ## Known Limitations
 
-- **Display**: The practical path is bootloader framebuffer -> simpledrm/fbdev
-  -> HelixScreen. The NT36830 dual-DSI/DSC panel driver is experimental and is
-  not the default boot path.
+- **Display**: The native NT36830 dual-DSI/DSC driver compiles and links on
+  7.1, but physical scanout has not yet been validated. Keep the recovery
+  artifacts from `RECOVERY.md` before flashing a 7.1 test image.
 - **Firmware**: WiFi requires Qualcomm firmware under `firmware/` before
   rebuilding rootfs.
 
@@ -84,3 +84,6 @@ systemd services.
 
 ### Revert to Android
 Flash original factory images for Razer Phone 2.
+
+To restore the preserved working Linux 6.16 WiFi/Helix image, follow
+`RECOVERY.md`.

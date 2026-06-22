@@ -1,6 +1,7 @@
 # Build products and local caches
 output/
 .tmp/
+panel-driver/generated-reference/
 *.log
 *.img
 __pycache__/

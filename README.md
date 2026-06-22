@@ -7,17 +7,28 @@ from Windows 11 through WSL Ubuntu 24.04.
 
 ## Current status
 
-- Clean kernel release: `6.16.0-rc2-sdm845` (no `-dirty` suffix).
+- Kernel baseline: SDM845 mainline `sdm845/7.1-dev`, pinned at
+  `85f1df2a4ec7` (`7.1.0-rc1`).
+- Complete kernel releases build cleanly as `7.1.0-rc1-sdm845` and
+  `7.1.0-rc1-sdm845-printer`.
 - USB NCM networking and SSH work at `192.168.137.133`.
-- Bootloader framebuffer, touch, Klipper, Moonraker, and HelixScreen work.
+- Touch, Klipper, Moonraker, and HelixScreen work on the preserved 6.16
+  recovery baseline.
+- A native NT36830 dual-DSI/DSC DRM driver is now implemented and linked into
+  the 7.1 kernel. It exposes 60/120 Hz modes and passes its DT binding check;
+  physical-panel validation is still required before flashing it as production.
 - WiFi works through MSS/WLFW, `rmtfs`, userspace `pd-mapper`, patched
   `tqftpserv` v1.2, Razer FIH NV sharing, and the ath10k host-capability quirk.
 - HelixScreen waits for `wlan0` at boot, then exposes WiFi through
   NetworkManager.
 
-The production kernel delta is kept in the board DTS and the top-level files
-under `kernel-patches/`. Diagnostic logging patches are archived under
-`kernel-patches/diagnostics/` and are not applied by normal builds.
+The production kernel delta is kept in the board DTS, panel driver/binding,
+and the top-level files under `kernel-patches/`. Historical diagnostic code
+was removed from this branch and remains recoverable from the 6.16 baseline
+tag.
+
+See [RECOVERY.md](RECOVERY.md) before display flashing. The exact known-working
+6.16 WiFi/Helix boot and rootfs images are stored outside the working tree.
 
 ## Prerequisites
 
@@ -116,7 +127,18 @@ The canonical implementation is limited to:
 - `scripts/build-all.sh`
 - `scripts/build-all-wsl.ps1`
 
-Everything under `deprecated-scripts/` is reference-only.
+Historical diagnostic scripts remain available from the recovery tag documented
+in `RECOVERY.md`; they are intentionally absent from the active build tree.
+
+For a driver/DT-only compile and link check without building every module:
+
+```bash
+RAZER_KERNEL_SCOPE=display RAZER_IMAGE_PROFILE=printer \
+  bash scripts/02-build-kernel.sh
+```
+
+This produces `display.kernel-release` and deliberately cannot be packaged
+with a rootfs. Use the normal full build for flashable artifacts.
 
 ## Flash
 

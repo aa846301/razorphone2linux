@@ -76,16 +76,6 @@
 			stride = <(1440 * 4)>;
 			format = "a8r8g8b8";
 
-			/*
-			 * Fake panel node for simpledrm DPI calculation and saner probe
-			 * ordering, following the conservative SDM845 phone bring-up pattern.
-			 */
-			panel = <&fb_panel>;
-
-			fb_panel: fb-panel {
-				width-mm = <71>;
-				height-mm = <126>;
-			};
 		};
 	};
 
@@ -506,13 +496,12 @@
  * Display/GPU clocks
  * ==========================================================================
  *
- * Practical bring-up uses the bootloader framebuffer through simpledrm. Keep
- * display/GPU clock domains disabled here: on SDM845, initializing these clocks
- * can reset the bootloader-programmed scanout state and make simplefb go black
- * a few seconds after boot.
+ * Linux 7.1 display bring-up enables DISPCC and MDSS for the NT36830 DRM
+ * driver. GPU remains disabled independently until its userspace path is
+ * validated.
  */
 &dispcc {
-	status = "disabled";
+	status = "okay";
 };
 
 &gpu {
@@ -588,27 +577,20 @@
  *   4. Release reset GPIO
  *   5. Send DSI initialization commands
  */
-/*
- * MDSS/DSI disabled until NT36830 panel driver is complete.
- * With MDSS enabled but no panel driver, MSM DRM seizes DSI hardware
- * and corrupts the bootloader framebuffer (花屏).
- * simpledrm owns 0x9d400000 exclusively in this phase.
- */
 &mdss {
-	status = "disabled";
+	status = "okay";
 };
 
 &mdss_mdp {
-	status = "disabled";
+	status = "okay";
 };
 
 &mdss_dsi0 {
-	status = "disabled";
+	status = "okay";
 
 	qcom,dual-dsi-mode;
 	qcom,master-dsi;
 	qcom,sync-dual-dsi;
-	qcom,mdss-mdp-transfer-time-us = <12500>;
 
 	/*
 	 * NT36830 panel node on DSI0 (primary interface).
@@ -621,7 +603,7 @@
 	 * to find the secondary DSI host.
 	 */
 	display_panel: panel@0 {
-		compatible = "razer,aura-nt36830-panel", "novatek,nt36830";
+		compatible = "razer,aura-nt36830", "novatek,nt36830";
 		reg = <0>;
 
 		/* Power supplies */
@@ -632,6 +614,7 @@
 		/* Control GPIOs */
 		reset-gpios = <&tlmm 6 GPIO_ACTIVE_LOW>;
 		te-gpios = <&tlmm 10 GPIO_ACTIVE_HIGH>;
+		rotation = <90>;
 		/*
 		 * panel-mode-gpio (GPIO 52) selects dual DSI mode.
 		 * Confirmed from Android DTBO entry-05 qcom,panel-mode-gpio=52.
@@ -642,9 +625,6 @@
 		pinctrl-0 = <&panel_default>;
 		pinctrl-1 = <&panel_sleep>;
 		pinctrl-names = "default", "sleep";
-
-		/* Backlight */
-		backlight = <&pmi8998_wled>;
 
 		/*
 		 * Dual-DSI port connections.
@@ -678,7 +658,7 @@
 };
 
 &mdss_dsi0_phy {
-	status = "disabled";
+	status = "okay";
 };
 
 /*
@@ -687,11 +667,10 @@
  * DSI1 is linked via port@1 on the panel node.
  */
 &mdss_dsi1 {
-	status = "disabled";
+	status = "okay";
 	vdda-supply = <&vdda_mipi_dsi0_1p2>;
 
 	qcom,dual-dsi-mode;
-	qcom,mdss-mdp-transfer-time-us = <12500>;
 
 	/* DSI1 is slave, so use DSI0 clocks */
 	assigned-clock-parents = <&mdss_dsi0_phy 0>,
@@ -704,7 +683,7 @@
 };
 
 &mdss_dsi1_phy {
-	status = "disabled";
+	status = "okay";
 };
 
 /*

@@ -1,0 +1,14 @@
+From: Razer Phone 2 Linux Port <razerphone2linux@example.invalid>
+Subject: [PATCH] dt-bindings: arm: qcom: add Razer Phone 2
+
+diff --git a/Documentation/devicetree/bindings/arm/qcom.yaml b/Documentation/devicetree/bindings/arm/qcom.yaml
+--- a/Documentation/devicetree/bindings/arm/qcom.yaml
++++ b/Documentation/devicetree/bindings/arm/qcom.yaml
+@@ -973,6 +973,7 @@ properties:
+               - oneplus,enchilada
+               - oneplus,fajita
+               - qcom,sdm845-mtp
++              - razer,aura
+               - shift,axolotl
+               - samsung,starqltechn
+               - samsung,w737
