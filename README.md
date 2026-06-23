@@ -17,8 +17,9 @@ from Windows 11 through WSL Ubuntu 24.04.
 - Touch, Klipper, Moonraker, and HelixScreen work on the preserved 6.16
   recovery baseline.
 - A native NT36830 dual-DSI/DSC DRM driver is now implemented and linked into
-  the 7.1 kernel. It exposes 60/120 Hz modes and passes its DT binding check;
-  physical-panel validation is still required before flashing it as production.
+  the 7.1 build as a module. It exposes 60/120 Hz modes and passes its DT
+  binding check. The first 7.1 test keeps MDSS/DSI disabled and uses the
+  bootloader framebuffer; native-panel validation is the next separate stage.
 - WiFi works through MSS/WLFW, `rmtfs`, userspace `pd-mapper`, patched
   `tqftpserv` v1.2, Razer FIH NV sharing, and the ath10k host-capability quirk.
 - HelixScreen waits for `wlan0` at boot, then exposes WiFi through

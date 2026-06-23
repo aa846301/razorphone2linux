@@ -15,9 +15,10 @@
 - 開機不依賴 USB host：early log 固定走 `ttyMSM0`，`ttyGS0` 只作為
   userspace 啟動後的可選 USB gadget serial 登入介面。
 - 6.16 還原基線上的觸控、Klipper、Moonraker、HelixScreen 已可用。
-- NT36830 原生 dual-DSI/DSC DRM driver 已真正實作並連結進 7.1 kernel，
-  提供 60/120 Hz mode 且通過 panel DT binding 檢查；刷機前仍需做實體
-  面板驗證。
+- NT36830 原生 dual-DSI/DSC DRM driver 已真正實作，並以 module 納入
+  7.1 build，提供 60/120 Hz mode 且通過 panel DT binding 檢查。第一階段
+  7.1 測試仍停用 MDSS/DSI、沿用 bootloader framebuffer；原生面板另列
+  下一階段測試。
 - WiFi 已透過 MSS/WLFW、`rmtfs`、userspace `pd-mapper`、修正版
   `tqftpserv` v1.2、Razer FIH NV sharing 與 ath10k host-capability quirk
   成功運作。

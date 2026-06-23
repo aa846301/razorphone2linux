@@ -27,6 +27,10 @@ Physical scanout is not yet claimed as working. The next test must use a
 recoverable A/B boot image and serial/USB observation. The known-working 6.16
 WiFi/Helix image is documented in `../RECOVERY.md`.
 
+The normal 7.1 baseline deliberately builds this driver as a module while
+keeping DISPCC/MDSS/DSI disabled. First validate the kernel, rootfs, USB, WiFi
+and HelixScreen on simpledrm; enable the native display path only afterward.
+
 The Razer board DTS intentionally does not rotate the native DRM panel.
 The required 90-degree UI and touch transform belongs to HelixScreen and is
 set by `HELIX_DISPLAY_ROTATION=90` plus `/display/rotate = 90`.

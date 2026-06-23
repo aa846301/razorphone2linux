@@ -496,12 +496,12 @@
  * Display/GPU clocks
  * ==========================================================================
  *
- * Linux 7.1 display bring-up enables DISPCC and MDSS for the NT36830 DRM
- * driver. GPU remains disabled independently until its userspace path is
- * validated.
+ * Stage 1 validates Linux 7.1 while preserving the known-good bootloader
+ * framebuffer. Keep these clock domains disabled so probing cannot reset the
+ * bootloader scanout before the native NT36830 test stage.
  */
 &dispcc {
-	status = "okay";
+	status = "disabled";
 };
 
 &gpu {
@@ -570,7 +570,7 @@
  *   - DSI1: Right half (720x2560)
  *   - Combined: 1440x2560
  *
- * Panel power sequence:
+ * Native panel power sequence for the later display-driver test:
  *   1. Enable VDDIO (vreg_l14a_1p88 - 1.8V)
  *   2. Enable VCI (panel_vci_3v3 - 3.3V)
  *   3. Enable POC (panel_vddi_poc_1p8 - 1.8V)
@@ -578,15 +578,15 @@
  *   5. Send DSI initialization commands
  */
 &mdss {
-	status = "okay";
+	status = "disabled";
 };
 
 &mdss_mdp {
-	status = "okay";
+	status = "disabled";
 };
 
 &mdss_dsi0 {
-	status = "okay";
+	status = "disabled";
 
 	qcom,dual-dsi-mode;
 	qcom,master-dsi;
@@ -657,7 +657,7 @@
 };
 
 &mdss_dsi0_phy {
-	status = "okay";
+	status = "disabled";
 };
 
 /*
@@ -666,7 +666,7 @@
  * DSI1 is linked via port@1 on the panel node.
  */
 &mdss_dsi1 {
-	status = "okay";
+	status = "disabled";
 	vdda-supply = <&vdda_mipi_dsi0_1p2>;
 
 	qcom,dual-dsi-mode;
@@ -682,7 +682,7 @@
 };
 
 &mdss_dsi1_phy {
-	status = "okay";
+	status = "disabled";
 };
 
 /*
