@@ -368,6 +368,7 @@ copy_aux_output "$OUTPUT_DIR/sdm845-razer-aura.dtb" "$WIN_OUTPUT_DIR/sdm845-raze
 copy_aux_output "$OUTPUT_DIR/Image.gz-dtb" "$WIN_OUTPUT_DIR/Image.gz-dtb"
 if [ "$KERNEL_SCOPE" = "full" ]; then
     copy_aux_output "$OUTPUT_DIR/kernel.release" "$WIN_OUTPUT_DIR/kernel.release"
+    rm -f "$WIN_OUTPUT_DIR/display.kernel-release"
 else
     copy_aux_output "$OUTPUT_DIR/display.kernel-release" "$WIN_OUTPUT_DIR/display.kernel-release"
     rm -f "$WIN_OUTPUT_DIR/kernel.release"

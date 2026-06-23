@@ -162,6 +162,8 @@ if [ -f "$KERNEL_RELEASE_FILE" ]; then
     MODULE_SRC="$OUTPUT_DIR/modules_install/lib/modules/$KERNEL_VERSION"
 
     if [ -d "$MODULE_SRC" ]; then
+        rm -rf "$MOUNT_DIR/lib/modules"
+        mkdir -p "$MOUNT_DIR/lib/modules"
         copy_tree "$MODULE_SRC" "$MOUNT_DIR/lib/modules/$KERNEL_VERSION"
         chroot "$MOUNT_DIR" depmod -a "$KERNEL_VERSION"
         echo "$KERNEL_VERSION" > "$ROOTFS_RELEASE_FILE"

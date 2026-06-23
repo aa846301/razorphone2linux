@@ -417,6 +417,8 @@ fi
 # Step 6: Install kernel modules
 # -------------------------------------------------------
 echo "[6/10] Installing kernel modules (version $KERNEL_VERSION)..."
+rm -rf "$CHROOT_DIR/lib/modules"
+mkdir -p "$CHROOT_DIR/lib/modules"
 rsync -av --progress \
     "$OUTPUT_DIR/modules_install/lib/modules/$KERNEL_VERSION" \
     "$CHROOT_DIR/lib/modules/"
