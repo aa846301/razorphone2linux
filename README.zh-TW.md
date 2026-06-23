@@ -9,6 +9,8 @@
 
 - kernel 已升級至 SDM845 mainline `sdm845/7.1-dev`，固定 commit
   `85f1df2a4ec7`（`7.1.0-rc1`）。
+- kernel config 依照 SDM845 tree 的實際順序合併：`defconfig`、
+  `sdm845.config`、`misc.config`，最後才套 Razer/profile fragments。
 - base/printer 完整 kernel 已分別成功產生
   `7.1.0-rc1-sdm845` 與 `7.1.0-rc1-sdm845-printer`。
 - USB NCM 網路與 SSH 可由 `192.168.137.133` 連線。

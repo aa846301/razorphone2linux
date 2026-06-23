@@ -9,6 +9,9 @@ from Windows 11 through WSL Ubuntu 24.04.
 
 - Kernel baseline: SDM845 mainline `sdm845/7.1-dev`, pinned at
   `85f1df2a4ec7` (`7.1.0-rc1`).
+- Kernel configuration follows the SDM845 tree's tested order:
+  `defconfig`, `sdm845.config`, `misc.config`, then the Razer/profile
+  fragments.
 - Complete kernel releases build cleanly as `7.1.0-rc1-sdm845` and
   `7.1.0-rc1-sdm845-printer`.
 - USB NCM networking and SSH work at `192.168.137.133`.

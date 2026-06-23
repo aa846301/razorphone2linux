@@ -39,7 +39,13 @@ export CROSS_COMPILE=aarch64-linux-gnu-
 # commit that is intentionally not an upstream annotated release tag.
 export LOCALVERSION=""
 
-MAX_JOBS=4
+MAX_JOBS="${RAZER_BUILD_JOBS:-4}"
+case "$MAX_JOBS" in
+    ''|*[!0-9]*|0)
+        echo "ERROR: RAZER_BUILD_JOBS must be a positive integer."
+        exit 2
+        ;;
+esac
 NPROC=$(nproc)
 if [ "$NPROC" -gt "$MAX_JOBS" ]; then
     BUILD_JOBS="$MAX_JOBS"
@@ -221,7 +227,21 @@ else
     exit 1
 fi
 
-# Apply the single canonical config fragment.
+# The SDM845 tree ships two maintained fragments on top of arm64 defconfig.
+# Apply them before the project fragments; using defconfig alone is not the
+# configuration tested by sdm845-mainline.
+for upstream_fragment in \
+    arch/arm64/configs/sdm845.config \
+    arch/arm64/configs/misc.config; do
+    if [ ! -f "$upstream_fragment" ]; then
+        echo "ERROR: missing SDM845 upstream config fragment: $upstream_fragment"
+        exit 1
+    fi
+    echo "Applying SDM845 upstream config fragment: $upstream_fragment"
+    ./scripts/kconfig/merge_config.sh -m .config "$upstream_fragment"
+done
+
+# Apply the canonical Razer config fragment.
 CONFIG_FRAGMENT="$PROJECT_DIR/config/razer-aura.config"
 if [ ! -f "$CONFIG_FRAGMENT" ]; then
     echo "ERROR: missing canonical config fragment: $CONFIG_FRAGMENT"
@@ -330,7 +350,8 @@ if [ "$KERNEL_SCOPE" = "full" ]; then
         "kernel/drivers/remoteproc/qcom_q6v5_pas.ko" \
         "kernel/drivers/remoteproc/qcom_wcnss_pil.ko" \
         "kernel/drivers/net/ipa/ipa.ko"; do
-        if [ ! -f "$OUTPUT_DIR/modules_install/lib/modules/$KERNEL_RELEASE/$module_path" ]; then
+        installed_module="$OUTPUT_DIR/modules_install/lib/modules/$KERNEL_RELEASE/$module_path"
+        if [ ! -f "$installed_module" ] && [ ! -f "$installed_module.zst" ]; then
             echo "ERROR: expected SDM845 Wi-Fi/MSS module missing after modules_install: $module_path"
             exit 1
         fi
