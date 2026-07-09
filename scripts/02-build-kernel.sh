@@ -57,7 +57,9 @@ if [ ! -d "$KERNEL_DIR/.git" ]; then
     exit 1
 fi
 
-if ! git -C "$KERNEL_DIR" merge-base --is-ancestor "$KERNEL_COMMIT" HEAD; then
+if [ -f "$KERNEL_DIR/.razer-source-snapshot" ]; then
+    echo "WARNING: using in-repository kernel source snapshot; pinned commit ancestry check skipped."
+elif ! git -C "$KERNEL_DIR" merge-base --is-ancestor "$KERNEL_COMMIT" HEAD; then
     echo "ERROR: pinned kernel commit is not an ancestor of the checkout."
     echo "Expected base commit: $KERNEL_COMMIT"
     exit 1

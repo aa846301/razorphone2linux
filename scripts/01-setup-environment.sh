@@ -87,8 +87,43 @@ echo "[2/5] Directory structure created."
 # -------------------------------------------------------
 # Step 3: Clone mainline SDM845 kernel
 # -------------------------------------------------------
-echo "[3/5] Cloning mainline SDM845 Linux kernel..."
-if [ ! -d "$KERNEL_DIR" ]; then
+echo "[3/5] Preparing mainline SDM845 Linux kernel..."
+if [ -d "$KERNEL_LOCAL_DIR" ]; then
+    echo "Using in-repository kernel source: $KERNEL_LOCAL_DIR"
+    rm -rf "$KERNEL_DIR"
+    mkdir -p "$(dirname "$KERNEL_DIR")"
+    if [ -d "$KERNEL_LOCAL_DIR/.git" ]; then
+        git clone --local --no-hardlinks "$KERNEL_LOCAL_DIR" "$KERNEL_DIR"
+        git -C "$KERNEL_DIR" checkout --detach "$KERNEL_COMMIT"
+        current="$(git -C "$KERNEL_DIR" rev-parse HEAD)"
+        if [ "$current" != "$KERNEL_COMMIT" ]; then
+            echo "ERROR: in-repository kernel checkout is at $current"
+            echo "Expected pinned commit: $KERNEL_COMMIT"
+            exit 1
+        fi
+    else
+        if [ -f "$KERNEL_LOCAL_DIR/.razer-kernel-commit" ]; then
+            local_commit="$(tr -d '\r\n' < "$KERNEL_LOCAL_DIR/.razer-kernel-commit")"
+            if [ "$local_commit" != "$KERNEL_COMMIT" ]; then
+                echo "ERROR: in-repository kernel snapshot marker is $local_commit"
+                echo "Expected pinned commit: $KERNEL_COMMIT"
+                exit 1
+            fi
+        else
+            echo "WARNING: kernel-source/linux has no .razer-kernel-commit marker."
+        fi
+        cp -a "$KERNEL_LOCAL_DIR" "$KERNEL_DIR"
+        touch "$KERNEL_DIR/.razer-source-snapshot"
+        git -C "$KERNEL_DIR" init
+        git -C "$KERNEL_DIR" add -A
+        git -C "$KERNEL_DIR" \
+            -c user.name="RazerPhone2Linux Build" \
+            -c user.email="razerphone2linux@example.invalid" \
+            commit -m "import in-repository kernel source snapshot"
+        echo "WARNING: kernel-source/linux is not a Git checkout; pinned commit ancestry cannot be verified."
+    fi
+    echo "Kernel prepared from in-repository source at $KERNEL_DIR"
+elif [ ! -d "$KERNEL_DIR" ]; then
     git clone --filter=blob:none --no-checkout "$KERNEL_REPO" "$KERNEL_DIR"
     git -C "$KERNEL_DIR" fetch --depth=1 origin "$KERNEL_COMMIT"
     git -C "$KERNEL_DIR" checkout --detach "$KERNEL_COMMIT"
