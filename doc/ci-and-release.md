@@ -2,11 +2,16 @@
 
 The public repository builds flashable images with GitHub Actions through
 `.github/workflows/build-image.yml`. The workflow runs only for pushed `v*`
-tags.
+tags and uses GitHub's `ubuntu-24.04-arm` hosted runner. The workflow file is
+the release recipe: parameters and build phases are written directly in YAML,
+while the repo scripts remain the local build implementation.
 
 ## What the Action does
 
-- Installs and verifies the Ubuntu 24.04 build toolchain.
+- Selects `none`, `ha`, or `3dprinter` from the release tag suffix.
+- Imports factory firmware from a private large-file URL or pre-populated
+  runner path.
+- Installs and verifies the Ubuntu 24.04 arm64 build toolchain.
 - Clones the pinned SDM845 kernel commit from `config/kernel-source.env`.
 - Applies the repository DTS, panel driver, kernel patches, config fragments,
   rootfs overlay, and the native-panel/GPU build setting.
@@ -19,10 +24,11 @@ tags.
 ## Firmware policy
 
 Razer/Qualcomm proprietary firmware is intentionally not stored in Git. For CI,
-set the repository secret `RAZER_FACTORY_ZIP_URL` to a private, access-controlled
-URL for `aura-p-release-3201-user-full.zip`. The Action downloads it during the
-run, extracts the firmware into the temporary checkout, and never commits the
-blobs back to the repository.
+set `RAZER_FACTORY_ZIP_URL` as a repository variable or secret pointing to
+`aura-p-release-3201-user-full.zip`. Use a variable for a public upstream URL,
+or a secret plus optional `RAZER_FACTORY_ZIP_AUTH_HEADER` for a private
+large-file URL. The Action downloads it during the run, extracts the firmware
+into the temporary checkout, and never commits the blobs back to the repository.
 
 If the secret is absent, CI fails before the rootfs build. This keeps public
 artifacts from looking complete while missing the firmware required for the

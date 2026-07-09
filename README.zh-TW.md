@@ -79,14 +79,18 @@ boot packager 會拒絕產生 `boot.img`。
 
 ## GitHub Actions
 
-`Build flashable image` workflow 只會在 push `v*` tag 時執行。它會建置
-native-panel 映像，並上傳
+`Build flashable image` workflow 只會在 push `v*` tag 時執行。YAML 會直接
+列出 GitHub `ubuntu-24.04-arm` hosted runner 上的 release recipe：選 tag
+profile、匯入韌體、建 native-panel/GPU kernel、建 ARM64 rootfs、封裝
+`boot.img`，並上傳
 `boot.img`、`rootfs-sparse.img`、`vbmeta_disabled.img`、initramfs、release
 markers、`userspace.profile` 與 `SHA256SUMS`。
 
-請將 repository secret `RAZER_FACTORY_ZIP_URL` 設成
-`aura-p-release-3201-user-full.zip` 的私有下載 URL。Tag 會自動選 profile：
-`v*`、`v*-ha`、`v*-3dprinter`。
+請將 `RAZER_FACTORY_ZIP_URL` 設成 repository variable 或 secret，指向
+`aura-p-release-3201-user-full.zip`。公開上游 URL 可以用 variable；私有
+大檔 URL 則用 secret，若需要 HTTP auth header，再加
+`RAZER_FACTORY_ZIP_AUTH_HEADER` secret。Tag 會自動選 profile：`v*`、`v*-ha`、
+`v*-3dprinter`。
 
 ## 刷機
 

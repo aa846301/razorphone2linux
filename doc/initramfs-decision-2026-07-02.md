@@ -7,7 +7,7 @@
 
 | 方案 | 來源 | 狀態 |
 |---|---|---|
-| A. 自製 busybox | `initramfs/init-boot.sh`（現行出貨路徑） | 手寫 partlabel 掃描、klibc bug workaround、手動塞 UFS PHY .ko；每次 kernel 變動都要人工同步 |
+| A. 自製 busybox | `initramfs/init-boot.sh`（舊出貨路徑，已從 repo 移除） | 手寫 partlabel 掃描、klibc bug workaround、手動塞 UFS PHY .ko；每次 kernel 變動都要人工同步 |
 | B. postmarketOS initramfs | `postmarketos-mkinitfs` + `boot-deploy`（Alpine apk 生態） | pmOS 裝置的標準方案 |
 | C. Ubuntu initramfs-tools | rootfs 內建 `update-initramfs` | 遷移已在 codex/6.16-standard-initramfs 動工，本 worktree commit 0f49a8b 已接管保全 |
 

@@ -1,16 +1,13 @@
 name: Build flashable image
 
-# Full reproduction of the Razer Phone 2 mainline Linux image from a clean
-# checkout. Source/configuration lives in this repository:
-#   - kernel source pin:      config/kernel-source.env
-#   - kernel patches:         kernel-patches/*.patch
-#   - DTS + panel driver:     dts/, panel-driver/
-#   - rootfs inputs:          rootfs-scripts/, rootfs-packages/, rootfs-binaries/
-# Proprietary Razer firmware is imported at runtime from RAZER_FACTORY_ZIP_URL.
-# The pipeline is the same four scripts used for local development; the CI
-# entrypoint (scripts/ci-build.sh) only adds architecture assertions and
-# checksumming. Reading this file top-to-bottom is sufficient to reproduce
-# the project on any Ubuntu 24.04 machine.
+# Release build recipe for the Razer Phone 2 mainline Linux image.
+# This workflow intentionally spells out the CI parameters instead of hiding
+# the release path behind a wrapper script:
+#   - runner: GitHub-hosted Ubuntu 24.04 arm64
+#   - image profile: base
+#   - userspace profile: tag suffix chooses none/ha/3dprinter
+#   - display: native NT36830 panel + Adreno 630, normal boot display mode
+#   - firmware: imported at runtime from RAZER_FACTORY_ZIP_URL
 
 on:
   push:
@@ -23,20 +20,59 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 150
     env:
-      RAZER_FACTORY_ZIP_URL: ${{ secrets.RAZER_FACTORY_ZIP_URL }}
-      RAZER_USERSPACE_PROFILE: ""
+      RAZER_IMAGE_PROFILE: base
+      RAZER_DISPLAY_NATIVE_PANEL: "1"
+      RAZER_BOOT_DISPLAY_MODE: normal
+      RAZER_SKIP_REFERENCE: "1"
+      RAZER_FACTORY_ZIP_URL: ${{ secrets.RAZER_FACTORY_ZIP_URL || vars.RAZER_FACTORY_ZIP_URL }}
+      RAZER_FACTORY_ZIP_AUTH_HEADER: ${{ secrets.RAZER_FACTORY_ZIP_AUTH_HEADER }}
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Select userspace profile from tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${GITHUB_REF_NAME}" in
+            *-ha) profile=ha ;;
+            *-3dprinter) profile=3dprinter ;;
+            *) profile=none ;;
+          esac
+          echo "RAZER_USERSPACE_PROFILE=${profile}" >> "$GITHUB_ENV"
+          echo "CI tag: ${GITHUB_REF_NAME}"
+          echo "CI userspace profile: ${profile}"
+
+      - name: Validate firmware source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${RAZER_FACTORY_ZIP_URL}" ]; then
+            echo "Firmware will be downloaded from RAZER_FACTORY_ZIP_URL."
+          elif [ -f firmware/qcom/sdm845/Razer/aura/mba.mbn ]; then
+            echo "Firmware is already present in firmware/."
+          else
+            cat >&2 <<'EOF'
+          ERROR: firmware/qcom/sdm845/Razer/aura/mba.mbn is missing.
+
+          Set RAZER_FACTORY_ZIP_URL as either a repository secret or variable
+          that points at aura-p-release-3201-user-full.zip, or provide firmware/
+          on a self-hosted runner. Do not commit proprietary Razer/Qualcomm
+          firmware blobs into this repository.
+          EOF
+            exit 1
+          fi
 
       - name: Free runner disk space
-        # Kernel checkout + build tree + 4GB rootfs image + debootstrap
-        # chroot need ~15GB; drop the preinstalled toolchains we never use.
+        shell: bash
         run: |
+          set -euo pipefail
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
                       /usr/local/.ghcup /usr/local/share/boost
           df -h /
@@ -45,12 +81,103 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/razorphone2linux/kernel/linux
-          key: kernel-${{ hashFiles('config/kernel-source.env') }}
+          key: kernel-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-source.env') }}
 
-      - name: Build (setup -> kernel -> rootfs -> boot image)
-        run: bash scripts/ci-build.sh
+      - name: Prepare cached kernel checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel_dir="$HOME/razorphone2linux/kernel/linux"
+          kernel_commit="$(. ./config/kernel-source.env && echo "$KERNEL_COMMIT")"
+          if [ -d "$kernel_dir/.git" ]; then
+            git -C "$kernel_dir" checkout --detach "$kernel_commit"
+            git -C "$kernel_dir" branch -D razerphone2linux/integration 2>/dev/null || true
+            git -C "$kernel_dir" reset --hard "$kernel_commit"
+            git -C "$kernel_dir" clean -fd
+          fi
 
-      - name: Upload boot image + metadata
+      - name: Install build environment and pinned kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/01-setup-environment.sh
+
+      - name: Import factory firmware
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${RAZER_FACTORY_ZIP_URL}" ]; then
+            curl_args=(-L --fail --retry 3)
+            if [ -n "${RAZER_FACTORY_ZIP_AUTH_HEADER}" ]; then
+              curl_args+=(-H "${RAZER_FACTORY_ZIP_AUTH_HEADER}")
+            fi
+            curl "${curl_args[@]}" \
+              -o aura-p-release-3201-user-full.zip \
+              "${RAZER_FACTORY_ZIP_URL}"
+            bash scripts/extract-modem-firmware.sh
+          else
+            echo "Using firmware already present in firmware/."
+          fi
+          test -f firmware/qcom/sdm845/Razer/aura/mba.mbn
+
+      - name: Build kernel with native panel and GPU
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/02-build-kernel.sh
+
+      - name: Assert release kernel configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$HOME/razorphone2linux/output/${RAZER_IMAGE_PROFILE}"
+          for opt in DRM_MSM DRM_PANEL_NOVATEK_NT36830; do
+            grep -q "^CONFIG_${opt}=y$" "$out/kernel.config" || {
+              echo "ASSERT-FAIL: CONFIG_${opt} is not =y"
+              exit 1
+            }
+          done
+          for opt in QCOM_Q6V5_MSS ATH10K_SNOC; do
+            grep -q "^CONFIG_${opt}=m$" "$out/kernel.config" || {
+              echo "ASSERT-FAIL: CONFIG_${opt} is not =m"
+              exit 1
+            }
+          done
+          kernel_size="$(stat -c%s "$out/Image.gz-dtb")"
+          echo "kernel blob: ${kernel_size} bytes"
+          if [ "$kernel_size" -ge 32000000 ]; then
+            echo "ASSERT-FAIL: kernel blob too large for ABL ramdisk_offset headroom"
+            exit 1
+          fi
+
+      - name: Build ARM64 rootfs
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -E bash scripts/03-build-rootfs.sh
+
+      - name: Package boot image
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/04-make-boot-image.sh
+
+      - name: Write checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "output/${RAZER_IMAGE_PROFILE}"
+          printf '%s\n' "$RAZER_USERSPACE_PROFILE" > userspace.profile
+          sha256sum \
+            boot.img \
+            rootfs-sparse.img \
+            Image.gz-dtb \
+            kernel.config \
+            userspace.profile \
+            > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload boot image and metadata
         uses: actions/upload-artifact@v4
         with:
           name: boot-image
@@ -66,7 +193,7 @@ jobs:
             output/base/vbmeta_disabled.img
             output/base/SHA256SUMS
 
-      - name: Upload rootfs (sparse fastboot image)
+      - name: Upload rootfs sparse fastboot image
         uses: actions/upload-artifact@v4
         with:
           name: rootfs-sparse
