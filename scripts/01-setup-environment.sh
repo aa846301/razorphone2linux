@@ -114,7 +114,16 @@ if [ -d "$KERNEL_LOCAL_DIR" ]; then
         fi
         cp -a "$KERNEL_LOCAL_DIR" "$KERNEL_DIR"
         touch "$KERNEL_DIR/.razer-source-snapshot"
-        find "$KERNEL_DIR" -type f -name '*.sh' -exec chmod 0755 {} +
+        if [ -f "$KERNEL_DIR/.razer-executable-files" ]; then
+            while IFS= read -r executable_file; do
+                [ -n "$executable_file" ] || continue
+                if [ -f "$KERNEL_DIR/$executable_file" ]; then
+                    chmod 0755 "$KERNEL_DIR/$executable_file"
+                fi
+            done < "$KERNEL_DIR/.razer-executable-files"
+        else
+            find "$KERNEL_DIR" -type f -name '*.sh' -exec chmod 0755 {} +
+        fi
         git -C "$KERNEL_DIR" init
         git -C "$KERNEL_DIR" add -A
         git -C "$KERNEL_DIR" \

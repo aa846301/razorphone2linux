@@ -23,5 +23,11 @@ kernel-source/linux/.razer-kernel-commit
 Its contents must be the pinned kernel commit hash.
 
 When a snapshot is committed from Windows, executable bits may be normalized.
-The setup step restores `*.sh` execute permissions in the temporary build tree
-before creating the local integration commit.
+The setup step restores execute permissions from:
+
+```text
+kernel-source/linux/.razer-executable-files
+```
+
+This manifest is generated from executable build helper files in the pinned
+kernel snapshot.
