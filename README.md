@@ -81,7 +81,8 @@ Artifacts are written to `output/base/`. The boot packager refuses to produce
 
 ## GitHub Actions
 
-The `Build flashable image` workflow builds the native-panel image and uploads
+The `Build flashable image` workflow runs only when a `v*` tag is pushed. It
+builds the native-panel image and uploads
 `boot.img`, `rootfs-sparse.img`, `vbmeta_disabled.img`, initramfs, release
 markers, `userspace.profile`, and `SHA256SUMS`.
 

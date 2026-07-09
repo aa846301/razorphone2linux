@@ -13,23 +13,9 @@ name: Build flashable image
 # the project on any Ubuntu 24.04 machine.
 
 on:
-  workflow_dispatch:
-    inputs:
-      userspace_profile:
-        description: Optional app stack
-        type: choice
-        options:
-          - none
-          - ha
-          - 3dprinter
-        default: none
   push:
-    branches: [master]
     tags:
       - 'v*'
-    paths-ignore:
-      - '**.md'
-      - 'doc/**'
 
 concurrency:
   group: build-image-${{ github.ref }}
@@ -41,7 +27,7 @@ jobs:
     timeout-minutes: 150
     env:
       RAZER_FACTORY_ZIP_URL: ${{ secrets.RAZER_FACTORY_ZIP_URL }}
-      RAZER_USERSPACE_PROFILE: ${{ github.event.inputs.userspace_profile || '' }}
+      RAZER_USERSPACE_PROFILE: ""
 
     steps:
       - name: Checkout

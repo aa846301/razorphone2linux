@@ -79,7 +79,8 @@ boot packager 會拒絕產生 `boot.img`。
 
 ## GitHub Actions
 
-`Build flashable image` workflow 會建置 native-panel 映像，並上傳
+`Build flashable image` workflow 只會在 push `v*` tag 時執行。它會建置
+native-panel 映像，並上傳
 `boot.img`、`rootfs-sparse.img`、`vbmeta_disabled.img`、initramfs、release
 markers、`userspace.profile` 與 `SHA256SUMS`。
 
