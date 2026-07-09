@@ -423,6 +423,7 @@ jobs:
                   fi
                   cp -a "$KERNEL_LOCAL_DIR" "$KERNEL_DIR"
                   touch "$KERNEL_DIR/.razer-source-snapshot"
+                  find "$KERNEL_DIR" -type f -name '*.sh' -exec chmod 0755 {} +
                   git -C "$KERNEL_DIR" init
                   git -C "$KERNEL_DIR" add -A
                   git -C "$KERNEL_DIR" \
