@@ -31,3 +31,9 @@ kernel-source/linux/.razer-executable-files
 
 This manifest is generated from executable build helper files in the pinned
 kernel snapshot.
+
+The Linux kernel tree also ignores broad source-looking patterns such as `*.s`
+and `.*`. On Windows, those rules can hide real snapshot sources like `.S`
+assembly files, linker scripts, and dotfiles from the parent repository. Commit
+the full snapshot with `git add -f kernel-source/linux` and verify there are no
+ignored untracked files left under `kernel-source/linux`.
