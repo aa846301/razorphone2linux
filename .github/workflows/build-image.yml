@@ -40,6 +40,9 @@ jobs:
       RAZER_SKIP_REFERENCE: "1"
       RAZER_FACTORY_ZIP_URL: ${{ secrets.RAZER_FACTORY_ZIP_URL || vars.RAZER_FACTORY_ZIP_URL }}
       RAZER_FACTORY_ZIP_AUTH_HEADER: ${{ secrets.RAZER_FACTORY_ZIP_AUTH_HEADER }}
+      RAZER_WORKDIR: /home/runner/razorphone2linux
+      RAZER_FACTORY_ZIP: /home/runner/razorphone2linux/downloads/aura-p-release-3201-user-full.zip
+      RAZER_MODEM_IMG: /home/runner/razorphone2linux/factory/modem.img
 
     steps:
       - name: Checkout repository
@@ -94,86 +97,112 @@ jobs:
             exit 1
           fi
 
-      - name: Free runner disk space
+      - name: Prepare factory firmware paths
         shell: bash
         run: |
           set -euo pipefail
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-                      /usr/local/.ghcup /usr/local/share/boost
-          df -h /
+          mkdir -p "$(dirname "${RAZER_FACTORY_ZIP}")" "$(dirname "${RAZER_MODEM_IMG}")"
 
-      - name: Cache pinned kernel checkout
-        uses: actions/cache@v6
+      - name: Compute factory firmware cache key
+        id: factory-cache-key
+        if: env.RAZER_FACTORY_ZIP_URL != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          url_hash="$(printf '%s' "${RAZER_FACTORY_ZIP_URL}" | sha256sum | cut -d' ' -f1)"
+          echo "key=factory-zip-${RUNNER_OS}-${RUNNER_ARCH}-${url_hash}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore factory firmware package cache
+        id: factory-zip-cache
+        if: env.RAZER_FACTORY_ZIP_URL != ''
+        uses: actions/cache/restore@v6
         with:
-          path: ~/razorphone2linux/kernel/linux
-          key: kernel-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-source.env') }}
+          path: ${{ env.RAZER_FACTORY_ZIP }}
+          key: ${{ steps.factory-cache-key.outputs.key }}
 
-      - name: Prepare cached kernel checkout
+      - name: Download factory firmware package
+        if: env.RAZER_FACTORY_ZIP_URL != '' && steps.factory-zip-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
-          kernel_dir="$HOME/razorphone2linux/kernel/linux"
-          kernel_commit="$(. ./config/kernel-source.env && echo "$KERNEL_COMMIT")"
-          if [ -d "$kernel_dir/.git" ]; then
-            git -C "$kernel_dir" checkout --detach "$kernel_commit"
-            git -C "$kernel_dir" branch -D razerphone2linux/integration 2>/dev/null || true
-            git -C "$kernel_dir" reset --hard "$kernel_commit"
-            git -C "$kernel_dir" clean -fd
+          curl_args=(-L --fail --retry 3)
+          if [ -n "${RAZER_FACTORY_ZIP_AUTH_HEADER}" ]; then
+            curl_args+=(-H "${RAZER_FACTORY_ZIP_AUTH_HEADER}")
+          fi
+          curl "${curl_args[@]}" \
+            -o "${RAZER_FACTORY_ZIP}" \
+            "${RAZER_FACTORY_ZIP_URL}"
+          test -s "${RAZER_FACTORY_ZIP}"
+
+      - name: Save factory firmware package cache
+        if: env.RAZER_FACTORY_ZIP_URL != '' && steps.factory-zip-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.RAZER_FACTORY_ZIP }}
+          key: ${{ steps.factory-cache-key.outputs.key }}
+
+      - name: Install firmware extraction tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${RAZER_FACTORY_ZIP_URL}" ] && ! command -v 7z >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y p7zip-full
           fi
 
-      - name: Install build environment and pinned kernel
+      - name: Extract modem image from factory package
+        if: env.RAZER_FACTORY_ZIP_URL != ''
         shell: bash
         run: |
           set -euo pipefail
-          bash scripts/01-setup-environment.sh
+          test -s "${RAZER_FACTORY_ZIP}"
+          rm -f "${RAZER_MODEM_IMG}"
+          modem_entry="$(
+            7z l -slt "${RAZER_FACTORY_ZIP}" |
+              awk -F' = ' '/^Path = / {
+                path = $2
+                gsub(/\\/, "/", path)
+                if (path ~ /(^|\/)modem\.img$/) {
+                  print path
+                  exit
+                }
+              }'
+          )"
+          if [ -z "${modem_entry}" ]; then
+            echo "ERROR: modem.img was not found inside ${RAZER_FACTORY_ZIP}" >&2
+            exit 1
+          fi
 
-      - name: Import factory firmware
+          tmpdir="$(mktemp -d)"
+          cleanup() {
+            rm -rf "${tmpdir}"
+          }
+          trap cleanup EXIT
+
+          echo "Extracting modem.img from factory package: ${RAZER_FACTORY_ZIP}"
+          echo "  archive entry: ${modem_entry}"
+          7z e -y -o"${tmpdir}/factory" "${RAZER_FACTORY_ZIP}" "${modem_entry}" >/dev/null
+          if [ ! -f "${tmpdir}/factory/modem.img" ]; then
+            echo "ERROR: modem.img was not extracted from ${RAZER_FACTORY_ZIP}" >&2
+            exit 1
+          fi
+          cp -f "${tmpdir}/factory/modem.img" "${RAZER_MODEM_IMG}"
+          test -s "${RAZER_MODEM_IMG}"
+
+      - name: Extract modem firmware blobs
         shell: bash
         run: |
           set -euo pipefail
           if [ -n "${RAZER_FACTORY_ZIP_URL}" ]; then
-            factory_zip="aura-p-release-3201-user-full.zip"
             tmpdir="$(mktemp -d)"
             cleanup() {
               rm -rf "${tmpdir}"
             }
             trap cleanup EXIT
 
-            curl_args=(-L --fail --retry 3)
-            if [ -n "${RAZER_FACTORY_ZIP_AUTH_HEADER}" ]; then
-              curl_args+=(-H "${RAZER_FACTORY_ZIP_AUTH_HEADER}")
-            fi
-            curl "${curl_args[@]}" \
-              -o "${factory_zip}" \
-              "${RAZER_FACTORY_ZIP_URL}"
-
-            modem_entry="$(
-              7z l -slt "${factory_zip}" |
-                awk -F' = ' '/^Path = / {
-                  path = $2
-                  gsub(/\\/, "/", path)
-                  if (path ~ /(^|\/)modem\.img$/) {
-                    print path
-                    exit
-                  }
-                }'
-            )"
-            if [ -z "${modem_entry}" ]; then
-              echo "ERROR: modem.img was not found inside ${factory_zip}" >&2
-              exit 1
-            fi
-
-            echo "Extracting modem.img from factory package: ${factory_zip}"
-            echo "  archive entry: ${modem_entry}"
-            7z e -y -o"${tmpdir}/factory" "${factory_zip}" "${modem_entry}" >/dev/null
-            modem_img="${tmpdir}/factory/modem.img"
-            if [ ! -f "${modem_img}" ]; then
-              echo "ERROR: modem.img was not extracted to ${modem_img}" >&2
-              exit 1
-            fi
-
-            echo "Extracting modem firmware from: ${modem_img}"
-            if ! 7z x -y -o"${tmpdir}" "${modem_img}" 'image/*' >/tmp/razer-modem-7z.log; then
+            echo "Extracting modem firmware from: ${RAZER_MODEM_IMG}"
+            if ! 7z x -y -o"${tmpdir}" "${RAZER_MODEM_IMG}" 'image/*' >/tmp/razer-modem-7z.log; then
               if ! find "${tmpdir}/image" -type f -name 'modem.mdt' >/dev/null 2>&1; then
                 cat /tmp/razer-modem-7z.log
                 echo "ERROR: 7z did not extract modem firmware" >&2
@@ -230,11 +259,663 @@ jobs:
           fi
           test -f firmware/qcom/sdm845/Razer/aura/mba.mbn
 
-      - name: Build kernel with native panel and GPU
+      - name: Free runner disk space
         shell: bash
         run: |
           set -euo pipefail
-          bash scripts/02-build-kernel.sh
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/.ghcup /usr/local/share/boost
+          df -h /
+
+      - name: Restore pinned kernel checkout cache
+        id: kernel-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.RAZER_WORKDIR }}/kernel/linux
+          key: kernel-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-source.env') }}
+          restore-keys: |
+            kernel-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Prepare cached kernel checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel_dir="${RAZER_WORKDIR}/kernel/linux"
+          kernel_commit="$(. ./config/kernel-source.env && echo "$KERNEL_COMMIT")"
+          if [ -d "$kernel_dir/.git" ]; then
+            git -C "$kernel_dir" fetch --depth=1 origin "$kernel_commit"
+            git -C "$kernel_dir" checkout --detach "$kernel_commit"
+            git -C "$kernel_dir" branch -D razerphone2linux/integration 2>/dev/null || true
+            git -C "$kernel_dir" reset --hard "$kernel_commit"
+            git -C "$kernel_dir" clean -fd
+          fi
+
+      - name: Install build environment and pinned kernel
+        shell: bash
+        run: |
+          # ==========================================================================
+          # Razer Phone 2 (aura) - Mainline Linux Build Environment Setup
+          # ==========================================================================
+          # This script sets up the complete build environment in WSL Ubuntu 24.04
+          # for cross-compiling a mainline Linux kernel targeting the Razer Phone 2.
+          #
+          # Usage: bash 01-setup-environment.sh
+          # Must be run inside WSL Ubuntu (not Windows).
+          # ==========================================================================
+
+          set -euo pipefail
+
+          PROJECT_DIR="$GITHUB_WORKSPACE"
+          source "$PROJECT_DIR/config/kernel-source.env"
+
+          WORKDIR="${RAZER_WORKDIR:-$HOME/razorphone2linux}"
+          KERNEL_DIR="$WORKDIR/kernel/linux"
+          REFERENCE_DIR="$WORKDIR/reference"
+          FIRMWARE_DIR="$WORKDIR/firmware"
+
+          echo "========================================"
+          echo " Razer Phone 2 - Build Environment Setup"
+          echo "========================================"
+
+          # -------------------------------------------------------
+          # Step 1: Install build dependencies
+          # -------------------------------------------------------
+          if [ "${RAZER_SKIP_APT:-0}" = "1" ]; then
+              echo "[1/5] Skipping apt dependency installation (RAZER_SKIP_APT=1)."
+          else
+              echo "[1/5] Installing build dependencies..."
+              sudo apt update
+              sudo apt install -y \
+                  gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+                  build-essential bc bison flex \
+                  libssl-dev libncurses-dev libelf-dev \
+                  device-tree-compiler \
+                  debootstrap qemu-user-static \
+                  rsync git curl wget cpio lz4 \
+                  python3 python3-pip python3-git python3-libfdt python3-ply \
+                  libgmp-dev libmpc-dev \
+                  android-sdk-libsparse-utils \
+                  u-boot-tools \
+                  kmod p7zip-full zerofree
+
+              # Install mkbootimg (Android boot image tool)
+              if ! command -v mkbootimg &>/dev/null; then
+                  echo "Installing mkbootimg..."
+                  sudo apt install -y mkbootimg 2>/dev/null || {
+                      echo "mkbootimg not in apt, installing via pip..."
+                      pip3 install --break-system-packages mkbootimg 2>/dev/null || \
+                      pip3 install mkbootimg
+                  }
+              fi
+
+              # Install adb/fastboot
+              if ! command -v fastboot &>/dev/null; then
+                  echo "Installing android-tools for fastboot/adb..."
+                  sudo apt install -y android-tools-adb android-tools-fastboot 2>/dev/null || \
+                  sudo apt install -y adb fastboot 2>/dev/null || {
+                      echo "WARNING: Could not install fastboot/adb. Install manually."
+                  }
+              fi
+
+              echo "[1/5] Build dependencies installed."
+          fi
+
+          for required in aarch64-linux-gnu-gcc git dtc debootstrap qemu-aarch64-static \
+                  rsync cpio img2simg mkbootimg 7z zerofree; do
+              if ! command -v "$required" >/dev/null 2>&1; then
+                  echo "ERROR: required tool is missing: $required" >&2
+                  echo "Rerun without RAZER_SKIP_APT=1 after sudo access is available." >&2
+                  exit 1
+              fi
+          done
+
+          # -------------------------------------------------------
+          # Step 2: Create directory structure
+          # -------------------------------------------------------
+          echo "[2/5] Creating directory structure..."
+          mkdir -p "$WORKDIR"/{kernel,reference,firmware,rootfs,output,scripts}
+          mkdir -p "$FIRMWARE_DIR"/{qcom/sdm845/Razer/aura,ath10k/WCN3990/hw1.0}
+
+          echo "[2/5] Directory structure created."
+
+          # -------------------------------------------------------
+          # Step 3: Clone mainline SDM845 kernel
+          # -------------------------------------------------------
+          echo "[3/5] Cloning mainline SDM845 Linux kernel..."
+          if [ ! -d "$KERNEL_DIR" ]; then
+              git clone --filter=blob:none --no-checkout "$KERNEL_REPO" "$KERNEL_DIR"
+              git -C "$KERNEL_DIR" fetch --depth=1 origin "$KERNEL_COMMIT"
+              git -C "$KERNEL_DIR" checkout --detach "$KERNEL_COMMIT"
+              echo "Kernel cloned to $KERNEL_DIR"
+          else
+              current="$(git -C "$KERNEL_DIR" rev-parse HEAD)"
+              if [ "$current" != "$KERNEL_COMMIT" ]; then
+                  echo "ERROR: existing kernel checkout is at $current"
+                  echo "Expected pinned commit: $KERNEL_COMMIT"
+                  echo "Move the old checkout aside, then rerun this script."
+                  exit 1
+              fi
+              echo "Kernel checkout already uses pinned commit $KERNEL_COMMIT."
+          fi
+
+          # -------------------------------------------------------
+          # Step 4: Clone Razer Android kernel for reference
+          # -------------------------------------------------------
+          echo "[4/5] Cloning Razer Phone 2 Android kernel (reference)..."
+          if [ "${RAZER_SKIP_REFERENCE:-0}" = "1" ]; then
+              echo "Skipping reference kernel clone (RAZER_SKIP_REFERENCE=1, CI builds do not need it)."
+          elif [ ! -d "$REFERENCE_DIR/android_kernel_razer_aura" ]; then
+              git clone --depth=1 https://github.com/ASKSAP/android_kernel_razer_aura.git \
+                  "$REFERENCE_DIR/android_kernel_razer_aura"
+              echo "Reference kernel cloned."
+          else
+              echo "Reference kernel already exists, skipping."
+          fi
+
+          # -------------------------------------------------------
+          # Step 5: Verify cross-compiler
+          # -------------------------------------------------------
+          echo "[5/5] Verifying cross-compilation toolchain..."
+          CROSS_COMPILE_VER=$(aarch64-linux-gnu-gcc --version | head -1)
+          echo "Cross compiler: $CROSS_COMPILE_VER"
+
+          echo ""
+          echo "========================================"
+          echo " Environment setup complete!"
+          echo "========================================"
+          echo ""
+          echo "Workspace: $WORKDIR"
+          echo "Kernel:    $KERNEL_DIR"
+          echo "Reference: $REFERENCE_DIR"
+          echo ""
+          echo "Next steps:"
+          echo "  CI imports firmware, builds the kernel/rootfs, and packages boot.img inline."
+          echo "  Local helper scripts remain available for manual development builds."
+          echo ""
+          echo "IMPORTANT: You need to extract firmware blobs from Razer Phone 2 stock ROM"
+          echo "  into the project firmware/ directory before the full rootfs build."
+          echo "  Required firmware:"
+          echo "    - qcom/sdm845/Razer/aura/adsp.mbn"
+          echo "    - qcom/sdm845/Razer/aura/cdsp.mbn"
+          echo "    - qcom/sdm845/Razer/aura/a630_zap.mbn"
+          echo "    - qcom/sdm845/Razer/aura/venus.mbn"
+          echo "    - qcom/sdm845/Razer/aura/mba.mbn"
+          echo "    - qcom/sdm845/Razer/aura/modem.mbn"
+          echo "    - qcom/sdm845/Razer/aura/slpi.mbn"
+          echo "    - qcom/sdm845/Razer/aura/ipa_fws.mbn"
+          echo "    - ath10k/WCN3990/hw1.0/board.bin"
+          echo "    - ath10k/WCN3990/hw1.0/firmware-5.bin"
+
+      - name: Save pinned kernel checkout cache
+        if: steps.kernel-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.RAZER_WORKDIR }}/kernel/linux
+          key: kernel-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-source.env') }}
+
+      - name: Build kernel with native panel and GPU
+        shell: bash
+        run: |
+          # ==========================================================================
+          # Razer Phone 2 (aura) - Kernel Build Script
+          # ==========================================================================
+          # Cross-compiles the mainline Linux kernel with Razer Phone 2 device tree
+          # and NT36830 panel driver.
+          #
+          # Usage: bash 02-build-kernel.sh [menuconfig]
+          #   Optional arg "menuconfig" opens kernel config editor before building.
+          #
+          # Prerequisites: Run 01-setup-environment.sh first.
+          # ==========================================================================
+
+          set -euo pipefail
+
+          WORKDIR="${RAZER_WORKDIR:-$HOME/razorphone2linux}"
+          KERNEL_DIR="$WORKDIR/kernel/linux"
+          PROJECT_DIR="$GITHUB_WORKSPACE"
+          source "$PROJECT_DIR/config/kernel-source.env"
+          source "$PROJECT_DIR/config/build.env"
+          IMAGE_PROFILE="${RAZER_IMAGE_PROFILE:-base}"
+          case "$IMAGE_PROFILE" in
+              base) ;;
+              *) echo "ERROR: RAZER_IMAGE_PROFILE must be base."; exit 2 ;;
+          esac
+          OUTPUT_DIR="$WORKDIR/output/$IMAGE_PROFILE"
+          WIN_OUTPUT_DIR="$PROJECT_DIR/output/$IMAGE_PROFILE"
+
+          mkdir -p "$OUTPUT_DIR" "$WIN_OUTPUT_DIR"
+
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          # Suppress the kernel build system's automatic "+" suffix for an integration
+          # commit that is intentionally not an upstream annotated release tag.
+          export LOCALVERSION=""
+
+          # Default to 8 jobs (12-core host: leaves headroom for the desktop; the old
+          # hard cap of 4 wasted most of the machine). Override with RAZER_MAX_JOBS.
+          MAX_JOBS="${RAZER_MAX_JOBS:-8}"
+          NPROC=$(nproc)
+          if [ "$NPROC" -gt "$MAX_JOBS" ]; then
+              BUILD_JOBS="$MAX_JOBS"
+          else
+              BUILD_JOBS="$NPROC"
+          fi
+
+          echo "========================================"
+          echo " Razer Phone 2 - Kernel Build"
+          echo "========================================"
+          echo "Kernel dir: $KERNEL_DIR"
+          echo "Image profile: $IMAGE_PROFILE"
+          echo "Parallel jobs: $BUILD_JOBS"
+          echo ""
+
+          if [ ! -d "$KERNEL_DIR/.git" ]; then
+              echo "ERROR: missing kernel checkout. Run scripts/01-setup-environment.sh first."
+              exit 1
+          fi
+
+          if ! git -C "$KERNEL_DIR" merge-base --is-ancestor "$KERNEL_COMMIT" HEAD; then
+              echo "ERROR: pinned kernel commit is not an ancestor of the checkout."
+              echo "Expected base commit: $KERNEL_COMMIT"
+              exit 1
+          fi
+
+          if [ -n "$(git -C "$KERNEL_DIR" status --porcelain)" ]; then
+              echo "ERROR: kernel checkout contains uncommitted files before integration."
+              echo "Use a clean checkout or move it aside and rerun 01-setup-environment.sh."
+              git -C "$KERNEL_DIR" status --short
+              exit 1
+          fi
+
+          if grep -Rqs -E 'QRTR diag|GLINK diag|q6v5_diag_dump_crash_smem|IPA QMI diag' \
+                  "$KERNEL_DIR/net/qrtr/af_qrtr.c" \
+                  "$KERNEL_DIR/drivers/rpmsg/qcom_glink_native.c" \
+                  "$KERNEL_DIR/drivers/remoteproc/qcom_q6v5.c" \
+                  "$KERNEL_DIR/drivers/net/ipa/ipa_qmi.c"; then
+              echo "ERROR: stale diagnostic instrumentation exists in the kernel checkout."
+              echo "Move ~/razorphone2linux/kernel/linux aside and rerun 01-setup-environment.sh."
+              exit 1
+          fi
+
+          # -------------------------------------------------------
+          # Step 1: Install device tree and panel driver into kernel tree
+          # -------------------------------------------------------
+          echo "[1/6] Installing device tree and panel driver..."
+
+          # Copy DTS
+          DTS_DST="$KERNEL_DIR/arch/arm64/boot/dts/qcom/sdm845-razer-aura.dts"
+          cp -v "$PROJECT_DIR/dts/sdm845-razer-aura.dts" "$DTS_DST"
+
+          # Keep the checked-in DTS on the proven simplefb path by default.
+          # Native panel bring-up is opt-in so test artifacts can enable MDSS/DSI
+          # without making every normal build seize the bootloader framebuffer.
+          #
+          # RAZER_DISPLAY_NATIVE_PANEL=1 enables the whole native display path.
+          # RAZER_DISPLAY_NATIVE_PANEL_NODES accepts a comma/space separated subset, for
+          # staged debugging, for example:
+          #   RAZER_DISPLAY_NATIVE_PANEL_NODES=dispcc
+          #   RAZER_DISPLAY_NATIVE_PANEL_NODES="dispcc,mdss,mdss_mdp"
+          PANEL_NODE_LIST="${RAZER_DISPLAY_NATIVE_PANEL_NODES:-}"
+          if [ "${RAZER_DISPLAY_NATIVE_PANEL:-0}" = "1" ] && [ -z "$PANEL_NODE_LIST" ]; then
+              PANEL_NODE_LIST="dispcc mdss mdss_mdp mdss_dsi0 mdss_dsi0_phy mdss_dsi1 mdss_dsi1_phy gpu"
+          fi
+
+          if [ -n "$PANEL_NODE_LIST" ]; then
+              echo "  Enabling native display DTS nodes for this build: $PANEL_NODE_LIST"
+              python3 - "$DTS_DST" "$PANEL_NODE_LIST" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          path = Path(sys.argv[1])
+          labels = [item for item in re.split(r"[\s,]+", sys.argv[2].strip()) if item]
+          text = path.read_text()
+
+          valid = {
+              "dispcc",
+              "mdss",
+              "mdss_mdp",
+              "mdss_dsi0",
+              "mdss_dsi0_phy",
+              "mdss_dsi1",
+              "mdss_dsi1_phy",
+              "gpu",
+          }
+
+          unknown = sorted(set(labels) - valid)
+          if unknown:
+              raise SystemExit(f"unknown native display DTS node(s): {', '.join(unknown)}")
+
+          for label in labels:
+              pattern = re.compile(r"(&" + re.escape(label) + r"\s*\{.*?\n\};)", re.S)
+
+              def enable(match):
+                  block = match.group(1)
+                  if re.search(r'status\s*=\s*"[^"]+";', block):
+                      block = re.sub(r'status\s*=\s*"[^"]+";', 'status = "okay";', block, count=1)
+                  else:
+                      block = block.replace("{", '{\n\tstatus = "okay";', 1)
+                  return block
+
+              text, count = pattern.subn(enable, text, count=1)
+              if count != 1:
+                  raise SystemExit(f"failed to enable &{label} in {path}")
+
+          path.write_text(text)
+          PY
+          fi
+
+          # Copy panel driver
+          cp -v "$PROJECT_DIR/panel-driver/panel-novatek-nt36830.c" \
+              "$KERNEL_DIR/drivers/gpu/drm/panel/panel-novatek-nt36830.c"
+
+          # -------------------------------------------------------
+          # Step 2: Patch DTS Makefile to include our device tree
+          # -------------------------------------------------------
+          echo "[2/6] Patching DTS Makefile..."
+          DTS_MAKEFILE="$KERNEL_DIR/arch/arm64/boot/dts/qcom/Makefile"
+
+          if ! grep -q "sdm845-razer-aura" "$DTS_MAKEFILE"; then
+              # Find the line with the last sdm845 entry and add our DTB after it
+              # Use sed to add after the last sdm845 dtb line
+              LAST_SDM845_LINE=$(grep -n "sdm845-" "$DTS_MAKEFILE" | tail -1 | cut -d: -f1)
+              if [ -n "$LAST_SDM845_LINE" ]; then
+                  sed -i "${LAST_SDM845_LINE}a\\dtb-\$(CONFIG_ARCH_QCOM) += sdm845-razer-aura.dtb" "$DTS_MAKEFILE"
+                  echo "  Added sdm845-razer-aura.dtb to DTS Makefile (after line $LAST_SDM845_LINE)"
+              else
+                  # Fallback: append to end
+                  echo "dtb-\$(CONFIG_ARCH_QCOM) += sdm845-razer-aura.dtb" >> "$DTS_MAKEFILE"
+                  echo "  Added sdm845-razer-aura.dtb to DTS Makefile (appended)"
+              fi
+          else
+              echo "  sdm845-razer-aura.dtb already in DTS Makefile."
+          fi
+
+          # -------------------------------------------------------
+          # Step 3: Patch panel driver Kconfig and Makefile
+          # -------------------------------------------------------
+          echo "[3/6] Patching panel driver Kconfig and Makefile..."
+
+          PANEL_KCONFIG="$KERNEL_DIR/drivers/gpu/drm/panel/Kconfig"
+          PANEL_MAKEFILE="$KERNEL_DIR/drivers/gpu/drm/panel/Makefile"
+
+          # Add Kconfig entry if not present
+          if ! grep -q "DRM_PANEL_NOVATEK_NT36830" "$PANEL_KCONFIG"; then
+              # Find the NT36523 entry and add our entry after it
+              cat >> "$PANEL_KCONFIG" << 'KCONFIG_EOF'
+
+          config DRM_PANEL_NOVATEK_NT36830
+                  tristate "NovaTeK NT36830 Dual-DSI AMOLED panel with DSC"
+                  depends on OF
+                  depends on DRM_MIPI_DSI
+                  depends on BACKLIGHT_CLASS_DEVICE
+                  select DRM_DISPLAY_HELPER
+                  select DRM_DISPLAY_DSC_HELPER
+                  help
+                    Say Y or M here if you want to enable support for the NovaTeK
+                    NT36830 AMOLED display panel used in the Razer Phone 2.
+                    This panel uses Dual DSI with Display Stream Compression (DSC)
+                    at 1440x2560 resolution.
+
+                    If unsure, say N.
+          KCONFIG_EOF
+              echo "  Added DRM_PANEL_NOVATEK_NT36830 to Kconfig"
+          else
+              echo "  DRM_PANEL_NOVATEK_NT36830 already in Kconfig."
+          fi
+
+          # Add Makefile entry if not present
+          if ! grep -q "panel-novatek-nt36830" "$PANEL_MAKEFILE"; then
+              echo "obj-\$(CONFIG_DRM_PANEL_NOVATEK_NT36830) += panel-novatek-nt36830.o" >> "$PANEL_MAKEFILE"
+              echo "  Added panel-novatek-nt36830 to panel Makefile"
+          else
+              echo "  panel-novatek-nt36830 already in panel Makefile."
+          fi
+
+          # -------------------------------------------------------
+          # Step 3b: Apply repo-controlled kernel patches
+          # -------------------------------------------------------
+          echo "[3b/6] Applying repo-controlled kernel patches..."
+          PATCH_DIR="$PROJECT_DIR/kernel-patches"
+          if [ -d "$PATCH_DIR" ]; then
+              while IFS= read -r patch_file; do
+                  patch_name="$(basename "$patch_file")"
+                  if git -C "$KERNEL_DIR" apply --recount --reverse --check "$patch_file" >/dev/null 2>&1; then
+                      echo "  $patch_name already applied."
+                  else
+                      git -C "$KERNEL_DIR" apply --recount --check "$patch_file"
+                      git -C "$KERNEL_DIR" apply --recount "$patch_file"
+                      echo "  Applied $patch_name"
+                  fi
+              done < <(find "$PATCH_DIR" -maxdepth 1 -type f -name '*.patch' | sort)
+          else
+              echo "  No kernel-patches directory."
+          fi
+
+          # Keep the generated external kernel checkout clean. The authoritative source
+          # remains this project (DTS, panel source, config, and top-level patches), while
+          # the local integration commit prevents git's "-dirty" marker and makes it
+          # obvious exactly what was built.
+          if [ -n "$(git -C "$KERNEL_DIR" status --porcelain)" ]; then
+              if [ -z "$(git -C "$KERNEL_DIR" branch --show-current)" ]; then
+                  git -C "$KERNEL_DIR" switch -c razerphone2linux/integration
+              fi
+              git -C "$KERNEL_DIR" add -A
+              git -C "$KERNEL_DIR" \
+                  -c user.name="RazerPhone2Linux Build" \
+                  -c user.email="razerphone2linux@example.invalid" \
+                  commit -m "arm64: qcom: integrate Razer Phone 2 project sources"
+          fi
+
+          if [ -n "$(git -C "$KERNEL_DIR" status --porcelain)" ]; then
+              echo "ERROR: kernel integration commit did not leave a clean source tree."
+              git -C "$KERNEL_DIR" status --short
+              exit 1
+          fi
+
+          # -------------------------------------------------------
+          # Step 4: Configure kernel
+          # -------------------------------------------------------
+          echo "[4/6] Configuring kernel..."
+          cd "$KERNEL_DIR"
+
+          # Start with sdm845 defconfig (from the sdm845-mainline project)
+          if [ -f "arch/arm64/configs/sdm845_defconfig" ]; then
+              make sdm845_defconfig
+          elif [ -f "arch/arm64/configs/defconfig" ]; then
+              make defconfig
+          else
+              echo "ERROR: No suitable defconfig found!"
+              exit 1
+          fi
+
+          # Apply the single canonical config fragment.
+          CONFIG_FRAGMENT="$PROJECT_DIR/config/razer-aura.config"
+          if [ ! -f "$CONFIG_FRAGMENT" ]; then
+              echo "ERROR: missing canonical config fragment: $CONFIG_FRAGMENT"
+              exit 1
+          fi
+
+          echo "Applying Razer Phone 2 config fragment: $CONFIG_FRAGMENT"
+          sed 's/\r$//' "$CONFIG_FRAGMENT" > /tmp/razer_aura_fragment.config
+          ./scripts/kconfig/merge_config.sh -m .config /tmp/razer_aura_fragment.config
+
+          if [ "${RAZER_DISPLAY_NATIVE_PANEL:-0}" = "1" ] || [ "${RAZER_DISPLAY_NATIVE_PANEL_BUILTIN:-0}" = "1" ]; then
+              echo "Applying native-panel test config overrides."
+              # The panel is allowed to be built in -- only WiFi/modem must stay
+              # modular. DRM_MSM's own Kconfig has `select QCOM_MDT_LOADER if
+              # ARCH_QCOM` unconditionally, so DRM_MSM=y always drags
+              # QCOM_MDT_LOADER to =y too. This is a normal, legal Kconfig
+              # combination (a =m driver depending on a =y library is completely
+              # standard), so qcom_q6v5_mss.ko (kept =m below) SHOULD still load;
+              # if it doesn't, that is a real bug to diagnose with dmesg, not
+              # something to route around by making WiFi builtin.
+              # DRM_MSM can only be built in when optional QCOM_OCMEM is built in or off;
+              # turn it off for SDM845 panel tests so olddefconfig does not force
+              # DRM_MSM back to a module.
+              ./scripts/config --disable QCOM_OCMEM
+              ./scripts/config --enable DRM_MSM
+              ./scripts/config --enable DRM_PANEL_NOVATEK_NT36830
+          fi
+
+          if [ "${RAZER_EARLY_DEBUG_LOG:-0}" = "1" ]; then
+              echo "Applying early-crash log retention config overrides."
+              # Keep these opt-in: they are for bring-up artifacts that may hang or reboot
+              # before userspace can load modules.  In particular, build the SDM845 APSS
+              # watchdog driver into the kernel so a bootloader-enabled watchdog is
+              # claimed before an early display/DRM failure can silently reset the phone.
+              ./scripts/config --enable QCOM_WDT
+              ./scripts/config --enable PSTORE
+              ./scripts/config --enable PSTORE_CONSOLE
+              ./scripts/config --enable PSTORE_RAM
+              ./scripts/config --set-val PSTORE_DEFAULT_KMSG_BYTES 262144
+              ./scripts/config --enable MAGIC_SYSRQ
+          fi
+
+          # June parity (2026-07-03): the known-good June image runs this entire chain
+          # BUILT IN (its module tree has zero q6v5/ipa/ath10k/qrtr/glink .ko files).
+          # The previous "postmarketOS alignment" block here forced everything to =m,
+          # which is the only binary-level difference to the fresh builds that hard-
+          # reset ~30s after boot. Keep the chain =y; do not reintroduce --module here
+          # without retesting on the device.
+          ./scripts/config --module CFG80211
+          ./scripts/config --module MAC80211
+          ./scripts/config --module ATH10K
+          ./scripts/config --module ATH10K_SNOC
+          ./scripts/config --module QCOM_Q6V5_COMMON
+          ./scripts/config --module QCOM_Q6V5_MSS
+          ./scripts/config --module QCOM_Q6V5_ADSP
+          ./scripts/config --module QCOM_Q6V5_PAS
+          ./scripts/config --disable QCOM_Q6V5_WCSS
+          ./scripts/config --module QCOM_WCNSS_PIL
+          ./scripts/config --module QCOM_RPROC_COMMON
+          ./scripts/config --module QCOM_SYSMON
+          ./scripts/config --disable QCOM_PD_MAPPER
+          ./scripts/config --module QCOM_PDR_HELPERS
+          ./scripts/config --module QCOM_PDR_MSG
+          ./scripts/config --enable QCOM_RMTFS_MEM
+          ./scripts/config --module QCOM_MDT_LOADER
+          ./scripts/config --module QCOM_QMI_HELPERS
+          ./scripts/config --enable QCOM_AOSS_QMP
+          ./scripts/config --enable RESET_QCOM_AOSS
+          ./scripts/config --enable RESET_QCOM_PDC
+          ./scripts/config --enable RPMSG_QCOM_SMD
+          ./scripts/config --enable RPMSG_QCOM_GLINK
+          ./scripts/config --enable RPMSG_QCOM_GLINK_RPM
+          ./scripts/config --module RPMSG_QCOM_GLINK_SMEM
+          ./scripts/config --module QRTR
+          ./scripts/config --module QRTR_SMD
+          ./scripts/config --module QRTR_TUN
+          ./scripts/config --module QRTR_MHI
+          ./scripts/config --module MHI_BUS
+          ./scripts/config --module QCOM_PIL_INFO
+          ./scripts/config --module QCOM_IPA
+          ./scripts/config --disable LOCALVERSION_AUTO
+
+          # Optional: open menuconfig for manual adjustments
+          if [ "${1:-}" = "menuconfig" ]; then
+              make menuconfig
+          fi
+
+          # Finalize config
+          make olddefconfig
+
+          echo "[4/6] Kernel configured."
+
+          # -------------------------------------------------------
+          # Step 5: Build kernel, DTBs, and modules
+          # -------------------------------------------------------
+          echo "[5/6] Building kernel (this will take a while)..."
+          if ! make -j"$BUILD_JOBS" Image.gz dtbs modules 2>&1 | tee "$OUTPUT_DIR/build.log"; then
+              echo '' | tee -a "$OUTPUT_DIR/build.log"
+              echo 'Parallel build failed under WSL, retrying with -j1 for a stable artifact...' | tee -a "$OUTPUT_DIR/build.log"
+              make olddefconfig 2>&1 | tee -a "$OUTPUT_DIR/build.log"
+              make prepare modules_prepare 2>&1 | tee -a "$OUTPUT_DIR/build.log"
+              make -j1 Image.gz dtbs modules 2>&1 | tee -a "$OUTPUT_DIR/build.log"
+          fi
+
+          echo "[5/6] Build complete."
+
+          # -------------------------------------------------------
+          # Step 6: Install modules and collect outputs
+          # -------------------------------------------------------
+          echo "[6/6] Collecting build outputs..."
+
+          # Install modules to output directory
+          rm -rf "$OUTPUT_DIR/modules_install"
+          # INSTALL_MOD_STRIP: the config carries DEBUG_INFO=y, and unstripped .ko
+          # files balloon each module tree to ~330MB (the rootfs ships two kernels).
+          # Stripped trees are ~1/4 the size; debug symbols stay in the build tree.
+          make INSTALL_MOD_PATH="$OUTPUT_DIR/modules_install" INSTALL_MOD_STRIP=1 modules_install
+
+          KERNEL_RELEASE=$(make -s kernelrelease)
+          echo "$KERNEL_RELEASE" > "$OUTPUT_DIR/kernel.release"
+          cp -f "$KERNEL_DIR/.config" "$OUTPUT_DIR/config-$KERNEL_RELEASE"
+          cp -f "$KERNEL_DIR/.config" "$OUTPUT_DIR/kernel.config"
+          # The Wi-Fi/MSS chain is built in for June parity (see the config block
+          # above), so verify presence via modules.builtin instead of .ko files.
+          MODULES_BUILTIN="$OUTPUT_DIR/modules_install/lib/modules/$KERNEL_RELEASE/modules.builtin"
+          for builtin_path in \
+              "kernel/drivers/net/wireless/ath/ath10k/ath10k_core.ko" \
+              "kernel/drivers/net/wireless/ath/ath10k/ath10k_snoc.ko" \
+              "kernel/drivers/remoteproc/qcom_q6v5.ko" \
+              "kernel/drivers/remoteproc/qcom_q6v5_mss.ko" \
+              "kernel/drivers/remoteproc/qcom_q6v5_pas.ko" \
+              "kernel/drivers/remoteproc/qcom_wcnss_pil.ko" \
+              "kernel/drivers/net/ipa/ipa.ko"; do
+              if ! grep -qx "$builtin_path" "$MODULES_BUILTIN" && \
+                 [ ! -f "$OUTPUT_DIR/modules_install/lib/modules/$KERNEL_RELEASE/$builtin_path" ]; then
+                  echo "ERROR: SDM845 Wi-Fi/MSS driver missing (neither builtin nor module): $builtin_path"
+                  exit 1
+              fi
+          done
+
+          # Copy kernel image
+          cp -v arch/arm64/boot/Image.gz "$OUTPUT_DIR/Image.gz"
+
+          # Copy DTB
+          cp -v arch/arm64/boot/dts/qcom/sdm845-razer-aura.dtb "$OUTPUT_DIR/sdm845-razer-aura.dtb"
+
+          # Create concatenated Image.gz-dtb (needed for some bootloaders)
+          cat arch/arm64/boot/Image.gz \
+              arch/arm64/boot/dts/qcom/sdm845-razer-aura.dtb \
+              > "$OUTPUT_DIR/Image.gz-dtb"
+
+          mkdir -p "$WIN_OUTPUT_DIR"
+          copy_aux_output() {
+              local src="$1"
+              local dst="$2"
+
+              if ! cp -f "$src" "$dst"; then
+                  echo "  WARNING: failed to copy $(basename "$src") to Windows output."
+                  echo "           WSL output remains authoritative for boot packaging: $src"
+              fi
+          }
+
+          copy_aux_output "$OUTPUT_DIR/Image.gz" "$WIN_OUTPUT_DIR/Image.gz"
+          copy_aux_output "$OUTPUT_DIR/sdm845-razer-aura.dtb" "$WIN_OUTPUT_DIR/sdm845-razer-aura.dtb"
+          copy_aux_output "$OUTPUT_DIR/Image.gz-dtb" "$WIN_OUTPUT_DIR/Image.gz-dtb"
+          copy_aux_output "$OUTPUT_DIR/kernel.release" "$WIN_OUTPUT_DIR/kernel.release"
+          copy_aux_output "$OUTPUT_DIR/config-$KERNEL_RELEASE" "$WIN_OUTPUT_DIR/config-$KERNEL_RELEASE"
+          copy_aux_output "$OUTPUT_DIR/kernel.config" "$WIN_OUTPUT_DIR/kernel.config"
+          echo "mainline" > "$OUTPUT_DIR/kernel.flavor"
+          copy_aux_output "$OUTPUT_DIR/kernel.flavor" "$WIN_OUTPUT_DIR/kernel.flavor"
+
+          echo ""
+          echo "========================================"
+          echo " Kernel build complete!"
+          echo "========================================"
+          echo ""
+          echo "Outputs in: $OUTPUT_DIR"
+          echo "  Image.gz            - Compressed kernel image"
+          echo "  sdm845-razer-aura.dtb - Device tree blob"
+          echo "  Image.gz-dtb        - Combined kernel + DTB"
+          echo "  modules_install/    - Kernel modules"
+          echo "  kernel.release      - Kernel release string for rootfs/boot checks"
+          echo "  build.log           - Build log"
+          echo ""
+          echo "Next: Run bash 03-build-rootfs.sh"
 
       - name: Assert release kernel configuration
         shell: bash
@@ -264,13 +945,1689 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo -E bash scripts/03-build-rootfs.sh
+          sudo --preserve-env=RAZER_WORKDIR,RAZER_IMAGE_PROFILE,RAZER_USERSPACE_PROFILE,RAZER_UBUNTU_MIRROR,RAZER_ALLOW_MISSING_FIRMWARE,RAZER_MSS_DIAG_MANUAL,GITHUB_WORKSPACE bash <<'ROOTFS_BUILD_EOF'
+          # ==========================================================================
+          # Razer Phone 2 (aura) - Ubuntu Noble ARM64 Rootfs Builder
+          # ==========================================================================
+          # Creates an Ubuntu 24.04 (Noble) ARM64 root filesystem image configured
+          # for the Razer Phone 2 running mainline Linux (Home Assistant hub target).
+          #
+          # Usage: sudo bash 03-build-rootfs.sh
+          # Must be run as root (sudo) for debootstrap and chroot operations.
+          #
+          # Prerequisites:
+          #   - Run 01-setup-environment.sh first
+          #   - Run 02-build-kernel.sh first (modules needed)
+          # ==========================================================================
+
+          set -euo pipefail
+
+          if [ -n "${RAZER_WORKDIR:-}" ]; then
+              WORKDIR="$RAZER_WORKDIR"
+          elif [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+              WORKDIR="$(eval echo "~$SUDO_USER")/razorphone2linux"
+          else
+              WORKDIR="$HOME/razorphone2linux"
+          fi
+          PROJECT_DIR="$GITHUB_WORKSPACE"
+          source "$PROJECT_DIR/config/build.env"
+          IMAGE_PROFILE="${RAZER_IMAGE_PROFILE:-base}"
+          case "$IMAGE_PROFILE" in
+              base) ;;
+              *) echo "ERROR: RAZER_IMAGE_PROFILE must be base."; exit 2 ;;
+          esac
+          USERSPACE_PROFILE="${RAZER_USERSPACE_PROFILE:-none}"
+          case "$USERSPACE_PROFILE" in
+              none|ha|3dprinter) ;;
+              *) echo "ERROR: RAZER_USERSPACE_PROFILE must be none, ha, or 3dprinter."; exit 2 ;;
+          esac
+          OUTPUT_DIR="$WORKDIR/output/$IMAGE_PROFILE"
+          ROOTFS_DIR="$WORKDIR/rootfs"
+          ROOTFS_IMG="$ROOTFS_DIR/rootfs-noble-$IMAGE_PROFILE.img"
+          CHROOT_DIR="$ROOTFS_DIR/chroot-$IMAGE_PROFILE"
+          FIRMWARE_DIR="${FIRMWARE_DIR:-$PROJECT_DIR/firmware}"
+          ROOTFS_PACKAGES_DIR="${ROOTFS_PACKAGES_DIR:-$PROJECT_DIR/rootfs-packages/arm64}"
+          ROOTFS_BINARIES_DIR="${ROOTFS_BINARIES_DIR:-$PROJECT_DIR/rootfs-binaries/arm64}"
+          WIN_OUTPUT_DIR="$PROJECT_DIR/output/$IMAGE_PROFILE"
+          OUTPUT_ROOTFS_IMG="$OUTPUT_DIR/rootfs.img"
+
+          mkdir -p "$OUTPUT_DIR" "$WIN_OUTPUT_DIR"
+
+          cleanup_mounts() {
+              if mountpoint -q "$CHROOT_DIR/var/cache/razer-pip"; then umount "$CHROOT_DIR/var/cache/razer-pip" || true; fi
+              if mountpoint -q "$CHROOT_DIR/var/cache/apt/archives"; then umount "$CHROOT_DIR/var/cache/apt/archives" || true; fi
+              if mountpoint -q "$CHROOT_DIR/dev/pts"; then umount "$CHROOT_DIR/dev/pts" || true; fi
+              if mountpoint -q "$CHROOT_DIR/proc"; then umount "$CHROOT_DIR/proc" || true; fi
+              if mountpoint -q "$CHROOT_DIR/sys"; then umount "$CHROOT_DIR/sys" || true; fi
+              if mountpoint -q "$CHROOT_DIR/dev"; then umount "$CHROOT_DIR/dev" || true; fi
+              if mountpoint -q "$CHROOT_DIR"; then umount "$CHROOT_DIR" || true; fi
+          }
+
+          # Kernel version. Prefer the release written by 02-build-kernel.sh so rootfs
+          # and boot packaging never silently consume different module directories.
+          KERNEL_RELEASE_FILE="$OUTPUT_DIR/kernel.release"
+          if [ -f "$KERNEL_RELEASE_FILE" ]; then
+              KERNEL_VERSION=$(tr -d '\r\n' < "$KERNEL_RELEASE_FILE")
+          else
+              KERNEL_VERSION=$(ls "$OUTPUT_DIR/modules_install/lib/modules/" 2>/dev/null | head -1)
+          fi
+          if [ -z "$KERNEL_VERSION" ]; then
+              echo "ERROR: No kernel modules found in $OUTPUT_DIR/modules_install/"
+              echo "Please run 02-build-kernel.sh first."
+              exit 1
+          fi
+
+          if [ ! -d "$OUTPUT_DIR/modules_install/lib/modules/$KERNEL_VERSION" ]; then
+              echo "ERROR: kernel.release says '$KERNEL_VERSION' but modules are missing:"
+              echo "  $OUTPUT_DIR/modules_install/lib/modules/$KERNEL_VERSION"
+              echo "Run 02-build-kernel.sh and then rebuild rootfs with the same output directory."
+              exit 1
+          fi
+
+          HOSTNAME="razer-aura"
+          USERNAME="klipper"
+          # Default password - CHANGE THIS after first boot!
+          USER_PASSWORD="klipper"
+          if [ "$USERSPACE_PROFILE" = "3dprinter" ]; then
+              ROOTFS_SIZE_GB=6
+          else
+              ROOTFS_SIZE_GB=4
+          fi
+          MIRROR="${RAZER_UBUNTU_MIRROR:-https://ports.ubuntu.com/ubuntu-ports}"
+          DEBOOTSTRAP_CACHE_DIR="$WORKDIR/cache/debootstrap"
+          APT_CACHE_DIR="$WORKDIR/cache/apt-archives"
+          PIP_CACHE_DIR="$WORKDIR/cache/pip"
+
+          echo "========================================"
+          echo " Razer Phone 2 - Rootfs Builder"
+          echo "========================================"
+          echo "Distribution: Ubuntu Noble 24.04 ARM64"
+          echo "Profile:      $IMAGE_PROFILE"
+          echo "Userspace:    $USERSPACE_PROFILE"
+          echo "APT mirror:   $MIRROR"
+          echo "Kernel:       $KERNEL_VERSION"
+          echo "Image size:   ${ROOTFS_SIZE_GB}GB"
+          echo "Hostname:     $HOSTNAME"
+          echo "User:         $USERNAME"
+          echo ""
+
+          # Must be root
+          if [ "$EUID" -ne 0 ]; then
+              echo "ERROR: This script must be run as root (sudo)."
+              exit 1
+          fi
+          trap cleanup_mounts EXIT
+
+          set -euo pipefail
+
+          if [ "$EUID" -ne 0 ]; then
+              echo "ERROR: binfmt registration must run as root"
+              exit 1
+          fi
+
+          if [ ! -x /usr/bin/qemu-aarch64-static ]; then
+              echo "ERROR: /usr/bin/qemu-aarch64-static not found"
+              echo "Install qemu-user-static first."
+              exit 1
+          fi
+
+          mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc 2>/dev/null || true
+
+          if [ ! -f /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
+              printf '%s' ':qemu-aarch64:M:0:\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-aarch64-static:CF' \
+                  > /proc/sys/fs/binfmt_misc/register
+          fi
+
+          cat /proc/sys/fs/binfmt_misc/qemu-aarch64
+          echo "BINFMT_OK"
+
+          # -------------------------------------------------------
+          # Step 1: Create rootfs image
+          # -------------------------------------------------------
+          echo "[1/10] Creating ${ROOTFS_SIZE_GB}GB rootfs image..."
+          mkdir -p "$ROOTFS_DIR" "$CHROOT_DIR" "$DEBOOTSTRAP_CACHE_DIR" "$APT_CACHE_DIR" "$PIP_CACHE_DIR"
+          cleanup_mounts
+
+          dd if=/dev/zero of="$ROOTFS_IMG" bs=1G count="$ROOTFS_SIZE_GB" status=progress
+          mkfs.ext4 -L rootfs "$ROOTFS_IMG"
+
+          mount "$ROOTFS_IMG" "$CHROOT_DIR"
+          echo "  Rootfs image mounted at $CHROOT_DIR"
+
+          install -d "$CHROOT_DIR/usr/bin"
+          cp -f /usr/bin/qemu-aarch64-static "$CHROOT_DIR/usr/bin/qemu-aarch64-static"
+
+          # -------------------------------------------------------
+          # Step 2: Debootstrap base system
+          # -------------------------------------------------------
+          echo "[2/10] Running debootstrap (this takes several minutes)..."
+          debootstrap --cache-dir="$DEBOOTSTRAP_CACHE_DIR" --arch arm64 noble "$CHROOT_DIR" "$MIRROR"
+          echo "  Base system installed."
+
+          # -------------------------------------------------------
+          # Step 3: Mount virtual filesystems for chroot
+          # -------------------------------------------------------
+          echo "[3/10] Mounting virtual filesystems..."
+          mount --bind /proc "$CHROOT_DIR/proc"
+          mount --bind /dev "$CHROOT_DIR/dev"
+          mount --bind /dev/pts "$CHROOT_DIR/dev/pts"
+          mount --bind /sys "$CHROOT_DIR/sys"
+          mkdir -p "$CHROOT_DIR/var/cache/apt/archives"
+          mount --bind "$APT_CACHE_DIR" "$CHROOT_DIR/var/cache/apt/archives"
+          mkdir -p "$CHROOT_DIR/var/cache/razer-pip"
+          mount --bind "$PIP_CACHE_DIR" "$CHROOT_DIR/var/cache/razer-pip"
+
+          # -------------------------------------------------------
+          # Step 4: Configure APT sources
+          # -------------------------------------------------------
+          echo "[4/10] Configuring APT sources..."
+          cat > "$CHROOT_DIR/etc/apt/sources.list" << APT_EOF
+          # Ubuntu Ports (ARM64). Set RAZER_UBUNTU_MIRROR to override this official
+          # global endpoint with a closer regional mirror.
+          deb $MIRROR noble main restricted universe multiverse
+          deb $MIRROR noble-updates main restricted universe multiverse
+          deb $MIRROR noble-backports main restricted universe multiverse
+          deb $MIRROR noble-security main restricted universe multiverse
+          APT_EOF
+
+          install -D -m 0755 \
+              "$PROJECT_DIR/rootfs-scripts/usb-gadget-setup.sh" \
+              "$CHROOT_DIR/usr/local/bin/usb-gadget-setup.sh"
+          if [ -f "$PROJECT_DIR/config/device.env" ]; then
+              install -D -m 0600 \
+                  "$PROJECT_DIR/config/device.env" \
+                  "$CHROOT_DIR/etc/razerphone2linux/device.env"
+          fi
+          install -D -m 0755 \
+              "$PROJECT_DIR/rootfs-scripts/razer-wifi-ready.sh" \
+              "$CHROOT_DIR/usr/local/sbin/razer-wifi-ready"
+          install -D -m 0644 \
+              "$PROJECT_DIR/rootfs-scripts/initramfs-tools/razer-root.conf" \
+              "$CHROOT_DIR/etc/initramfs-tools/conf.d/razer-root"
+          install -D -m 0755 \
+              "$PROJECT_DIR/rootfs-scripts/initramfs-tools/razer-root-local-top" \
+              "$CHROOT_DIR/etc/initramfs-tools/scripts/local-top/razer-root"
+          install -D -m 0755 \
+              "$PROJECT_DIR/rootfs-scripts/initramfs-tools/razer-gpu-firmware" \
+              "$CHROOT_DIR/etc/initramfs-tools/hooks/razer-gpu-firmware"
+          # Panel bring-up color test: tool + units ship in the image, but the
+          # on-every-boot autocolortest is only auto-enabled by the debug refresh
+          # path (03-refresh-rootfs.sh), not in a from-scratch production build.
+          install -D -m 0755 \
+              "$PROJECT_DIR/rootfs-scripts/razer-panel-colortest.py" \
+              "$CHROOT_DIR/usr/local/sbin/razer-panel-colortest"
+          install -D -m 0644 \
+              "$PROJECT_DIR/rootfs-scripts/razer-panel-colortest.service" \
+              "$CHROOT_DIR/etc/systemd/system/razer-panel-colortest.service"
+          install -D -m 0644 \
+              "$PROJECT_DIR/rootfs-scripts/razer-panel-autocolortest.service" \
+              "$CHROOT_DIR/etc/systemd/system/razer-panel-autocolortest.service"
+          install -D -m 0644 \
+              "$PROJECT_DIR/rootfs-scripts/razer-quiet-console.service" \
+              "$CHROOT_DIR/etc/systemd/system/razer-quiet-console.service"
+          install -D -m 0755 \
+              "$PROJECT_DIR/rootfs-scripts/razer-charge-limits.sh" \
+              "$CHROOT_DIR/usr/local/sbin/razer-charge-limits"
+          install -D -m 0644 \
+              "$PROJECT_DIR/rootfs-scripts/razer-charge-limits.service" \
+              "$CHROOT_DIR/etc/systemd/system/razer-charge-limits.service"
+          install -D -m 0755 \
+              "$PROJECT_DIR/rootfs-scripts/razer-panel-idle-blank.sh" \
+              "$CHROOT_DIR/usr/local/sbin/razer-panel-idle-blank"
+          install -D -m 0644 \
+              "$PROJECT_DIR/rootfs-scripts/razer-panel-idle-blank.service" \
+              "$CHROOT_DIR/etc/systemd/system/razer-panel-idle-blank.service"
+          mkdir -p "$CHROOT_DIR/etc/systemd/system/basic.target.wants"
+          ln -sf ../razer-quiet-console.service \
+              "$CHROOT_DIR/etc/systemd/system/basic.target.wants/razer-quiet-console.service"
+          mkdir -p "$CHROOT_DIR/etc/systemd/system/multi-user.target.wants"
+          ln -sf ../razer-charge-limits.service \
+              "$CHROOT_DIR/etc/systemd/system/multi-user.target.wants/razer-charge-limits.service"
+          ln -sf ../razer-panel-idle-blank.service \
+              "$CHROOT_DIR/etc/systemd/system/multi-user.target.wants/razer-panel-idle-blank.service"
+          if [ -f "$ROOTFS_PACKAGES_DIR/tqftpserv_1.0-5_arm64.deb" ]; then
+              cp -f "$ROOTFS_PACKAGES_DIR/tqftpserv_1.0-5_arm64.deb" \
+                  "$CHROOT_DIR/tmp/tqftpserv_1.0-5_arm64.deb"
+          fi
+          if [ -f "$ROOTFS_BINARIES_DIR/rmtfs-razer-test" ]; then
+              install -D -m 0755 "$ROOTFS_BINARIES_DIR/rmtfs-razer-test" \
+                  "$CHROOT_DIR/usr/local/bin/rmtfs-razer-test"
+          fi
+          if [ -f "$ROOTFS_BINARIES_DIR/pd-mapper" ]; then
+              install -D -m 0755 "$ROOTFS_BINARIES_DIR/pd-mapper" \
+                  "$CHROOT_DIR/usr/local/bin/pd-mapper"
+          fi
+
+          # -------------------------------------------------------
+          # Step 5: Configure system inside chroot
+          # -------------------------------------------------------
+          echo "[5/10] Configuring system inside chroot..."
+
+          chroot "$CHROOT_DIR" /usr/bin/env     ROOTFS_HOSTNAME="$HOSTNAME"     ROOTFS_USERNAME="$USERNAME"     ROOTFS_USER_PASSWORD="$USER_PASSWORD"     /bin/bash -s <<'SETUP_EOF'
+          #!/bin/bash
+          set -euo pipefail
+
+          export DEBIAN_FRONTEND=noninteractive
+          : "${ROOTFS_HOSTNAME:?}"
+          : "${ROOTFS_USERNAME:?}"
+          : "${ROOTFS_USER_PASSWORD:?}"
+
+          # Update package lists. Avoid full apt upgrade in the QEMU chroot path; it is
+          # slow and can stall bring-up without improving the boot/rootfs contract.
+          apt update
+
+          # Set locale
+          apt install -y locales
+          locale-gen en_US.UTF-8
+          locale-gen zh_TW.UTF-8
+          update-locale LANG=en_US.UTF-8
+
+          # Set timezone
+          rm -f /etc/localtime
+          ln -s /usr/share/zoneinfo/Asia/Taipei /etc/localtime
+          echo "Asia/Taipei" > /etc/timezone
+
+          # Set hostname
+          echo "$ROOTFS_HOSTNAME" > /etc/hostname
+          cat > /etc/hosts << HOSTS_EOF
+          127.0.0.1   localhost
+          127.0.1.1   $ROOTFS_HOSTNAME
+
+          ::1         localhost ip6-localhost ip6-loopback
+          HOSTS_EOF
+
+          # Create fstab
+          cat > /etc/fstab << FSTAB_EOF
+          # Razer Phone 2 - Mainline Linux fstab
+          # <file system>                          <mount point>  <type>  <options>           <dump>  <pass>
+          /dev/disk/by-partlabel/userdata          /              ext4    errors=remount-ro   0       1
+          tmpfs                                    /tmp           tmpfs   defaults,nosuid     0       0
+          FSTAB_EOF
+
+          # Remove netplan (use NetworkManager instead)
+          apt purge -y netplan.io 2>/dev/null || true
+
+          # Create user
+          useradd -m -s /bin/bash "$ROOTFS_USERNAME"
+          echo "$ROOTFS_USERNAME:$ROOTFS_USER_PASSWORD" | chpasswd
+          usermod -aG sudo "$ROOTFS_USERNAME"
+
+          # Set root password (same as user for convenience - change later!)
+          echo "root:$ROOTFS_USER_PASSWORD" | chpasswd
+
+          # Install essential packages
+          # rmtfs: Qualcomm remote filesystem daemon - modem/WiFi firmware loader depends on this
+          # qrtr-tools: Qualcomm IPC Router - required by ath10k_snoc and modem subsystem
+          apt install -y \
+              bash-completion \
+              nano vim \
+              chrony \
+              locales \
+              sudo \
+              curl wget \
+              network-manager \
+              openssh-server \
+              initramfs-tools \
+              wpasupplicant \
+              kmod \
+              rmtfs \
+              qrtr-tools \
+              udev systemd-sysv \
+              iproute2 iputils-ping \
+              dbus \
+              usbutils pciutils \
+              evtest \
+              htop \
+              ca-certificates \
+              gnupg \
+              python3
+
+          # Install repo-controlled ARM64 packages that are not consistently available
+          # from the enabled Ubuntu package set during cached validation builds.
+          if [ -f /tmp/tqftpserv_1.0-5_arm64.deb ]; then
+              apt install -y /tmp/tqftpserv_1.0-5_arm64.deb
+              rm -f /tmp/tqftpserv_1.0-5_arm64.deb
+          else
+              echo "WARNING: tqftpserv package missing from rootfs package overlay"
+          fi
+
+          # Enable NetworkManager
+          mkdir -p /etc/NetworkManager/conf.d
+          cat > /etc/NetworkManager/conf.d/10-unmanaged-usb-gadget.conf << 'NM_USB_EOF'
+          [keyfile]
+          unmanaged-devices=interface-name:usb0
+          NM_USB_EOF
+          systemctl enable NetworkManager
+
+          # Enable SSH
+          systemctl enable ssh
+
+          # -------------------------------------------------------
+          # Auto-resize filesystem on first boot
+          # -------------------------------------------------------
+          cat > /etc/systemd/system/resizefs.service << 'RESIZE_EOF'
+          [Unit]
+          Description=Expand root filesystem to fill partition
+          After=local-fs.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/bin/bash -c 'exec /usr/sbin/resize2fs \$(findmnt -nvo SOURCE /)'
+          ExecStartPost=/usr/bin/systemctl disable resizefs.service
+          RemainAfterExit=true
+
+          [Install]
+          WantedBy=default.target
+          RESIZE_EOF
+          systemctl enable resizefs.service
+
+          # -------------------------------------------------------
+          # Serial console on UART (debug)
+          # -------------------------------------------------------
+          cat > /etc/systemd/system/serial-getty@ttyMSM0.service << 'UART_EOF'
+          [Unit]
+          Description=Serial Console on ttyMSM0 (UART Debug)
+
+          [Service]
+          ExecStart=-/usr/sbin/agetty -L 115200 ttyMSM0 xterm-256color
+          Type=idle
+          Restart=always
+          RestartSec=0
+
+          [Install]
+          WantedBy=multi-user.target
+          UART_EOF
+          systemctl enable serial-getty@ttyMSM0.service
+
+          # -------------------------------------------------------
+          # Serial console on USB gadget
+          # -------------------------------------------------------
+          cat > /etc/systemd/system/serial-getty@ttyGS0.service << 'USB_EOF'
+          [Unit]
+          Description=Serial Console on ttyGS0 (USB Gadget)
+
+          [Service]
+          ExecStart=-/usr/sbin/agetty -L 115200 ttyGS0 xterm-256color
+          Type=idle
+          Restart=always
+          RestartSec=0
+
+          [Install]
+          WantedBy=multi-user.target
+          USB_EOF
+          systemctl enable serial-getty@ttyGS0.service
+
+          cat > /etc/systemd/system/usb-gadget.service << 'GADGET_SERVICE_EOF'
+          [Unit]
+          Description=USB ACM serial + NCM ethernet gadget
+          DefaultDependencies=no
+          After=systemd-modules-load.service local-fs.target
+          Before=sysinit.target
+          Before=serial-getty@ttyGS0.service
+
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          ExecStart=/usr/local/bin/usb-gadget-setup.sh
+
+          [Install]
+          WantedBy=sysinit.target
+          GADGET_SERVICE_EOF
+          systemctl enable usb-gadget.service
+
+          mkdir -p /etc/systemd/system/serial-getty@ttyGS0.service.d
+          cat > /etc/systemd/system/serial-getty@ttyGS0.service.d/after-usb-gadget.conf << 'GADGET_DROPIN_EOF'
+          [Unit]
+          After=usb-gadget.service
+          Wants=usb-gadget.service
+          GADGET_DROPIN_EOF
+
+          # -------------------------------------------------------
+          # Kernel modules load configuration
+          # -------------------------------------------------------
+          cat > /etc/modules-load.d/razer-aura.conf << 'MODULES_EOF'
+          # Razer Phone 2 kernel modules
+          # Keep MDSS/DSI/MSM DRM out of the default path. The practical display path is
+          # bootloader framebuffer -> simpledrm/fbdev (native NT36830 panel comes later).
+          # WiFi
+          qcom_sysmon
+          qcom_q6v5_mss
+          ath10k_core
+          ath10k_snoc
+          # Touchscreen
+          rmi_i2c
+          MODULES_EOF
+
+          rm -f /etc/modprobe.d/razer-late-modem-test.conf
+
+          # -------------------------------------------------------
+          # Disable unnecessary services for faster boot
+          # -------------------------------------------------------
+          systemctl disable apt-daily.timer 2>/dev/null || true
+          systemctl disable apt-daily-upgrade.timer 2>/dev/null || true
+          systemctl disable fstrim.timer 2>/dev/null || true
+
+          # Clean up
+          apt clean
+          rm -f /tmp/*
+          history -c
+
+          echo "System configuration complete."
+          SETUP_EOF
+
+          # The distro package supplies the service unit and dependencies, but the
+          # repo-controlled binary adds the Android firmware path aliases required by
+          # Razer's modem/WLAN PD TFTP requests.
+          if [ -f "$ROOTFS_BINARIES_DIR/tqftpserv" ]; then
+              install -D -m 0755 "$ROOTFS_BINARIES_DIR/tqftpserv" \
+                  "$CHROOT_DIR/usr/bin/tqftpserv"
+          else
+              echo "WARNING: patched tqftpserv missing from $ROOTFS_BINARIES_DIR"
+          fi
+
+          # -------------------------------------------------------
+          # Step 6: Install kernel modules
+          # -------------------------------------------------------
+          echo "[6/10] Installing kernel modules (version $KERNEL_VERSION)..."
+          rsync -av --progress \
+              "$OUTPUT_DIR/modules_install/lib/modules/$KERNEL_VERSION" \
+              "$CHROOT_DIR/lib/modules/"
+
+          # Run depmod inside chroot
+          chroot "$CHROOT_DIR" depmod -a "$KERNEL_VERSION"
+          echo "$KERNEL_VERSION" > "$OUTPUT_DIR/rootfs.kernel-release"
+
+          echo "  Kernel modules installed."
+
+          # -------------------------------------------------------
+          # Step 6b: Generate initramfs after kernel modules exist
+          # -------------------------------------------------------
+          echo "[6b/10] Generating Ubuntu initramfs..."
+
+          mkdir -p "$CHROOT_DIR/boot"
+          if [ -f "$OUTPUT_DIR/config-$KERNEL_VERSION" ]; then
+              cp -f "$OUTPUT_DIR/config-$KERNEL_VERSION" "$CHROOT_DIR/boot/config-$KERNEL_VERSION"
+          elif [ -f "$OUTPUT_DIR/kernel.config" ]; then
+              cp -f "$OUTPUT_DIR/kernel.config" "$CHROOT_DIR/boot/config-$KERNEL_VERSION"
+          fi
+          chroot "$CHROOT_DIR" update-initramfs -c -k "$KERNEL_VERSION"
+
+          INITRD_SRC="$CHROOT_DIR/boot/initrd.img-$KERNEL_VERSION"
+          if [ ! -f "$INITRD_SRC" ]; then
+              echo "ERROR: initramfs was not generated at /boot/initrd.img-$KERNEL_VERSION"
+              exit 1
+          fi
+
+          cp -f "$INITRD_SRC" "$OUTPUT_DIR/initrd.img-$KERNEL_VERSION"
+          cp -f "$INITRD_SRC" "$OUTPUT_DIR/initrd.img"
+          echo "  Initramfs copied to $OUTPUT_DIR/initrd.img-$KERNEL_VERSION"
+
+          # -------------------------------------------------------
+          # Step 7: Install firmware blobs
+          # -------------------------------------------------------
+          echo "[7/10] Installing firmware blobs..."
+
+          # 7a: Proprietary blobs (adsp, cdsp, gpu zap, venus) from stock ROM.
+          # firmware/** is gitignored, so a fresh checkout/worktree only contains
+          # README.md. Checking "directory non-empty" is therefore not enough: require
+          # the Razer modem loader explicitly, or the image silently ships without
+          # WiFi/ADSP/CDSP (seen 2026-07-02).
+          if [ -f "$FIRMWARE_DIR/qcom/sdm845/Razer/aura/mba.mbn" ]; then
+              mkdir -p "$CHROOT_DIR/usr/lib/firmware"
+              cp -rv "$FIRMWARE_DIR"/* "$CHROOT_DIR/usr/lib/firmware/"
+              echo "  Proprietary firmware installed."
+          elif [ "${RAZER_ALLOW_MISSING_FIRMWARE:-0}" = "1" ]; then
+              echo "  WARNING: proprietary firmware missing; building anyway"
+              echo "  (RAZER_ALLOW_MISSING_FIRMWARE=1). WiFi/ADSP/CDSP will not work."
+          else
+              echo "ERROR: $FIRMWARE_DIR/qcom/sdm845/Razer/aura/mba.mbn is missing."
+              echo "firmware/ is gitignored; copy it from an existing checkout or run"
+              echo "scripts/extract-modem-firmware.sh. Set RAZER_ALLOW_MISSING_FIRMWARE=1"
+              echo "to build a no-WiFi image deliberately."
+              exit 1
+          fi
+
+          # 7b: WCN3990 WiFi firmware from linux-firmware (open-source, no ROM needed).
+          echo "  Downloading WCN3990 (ath10k) firmware from linux-firmware git..."
+          LINUX_FW_BASE="https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain"
+          ATH10K_DIR="$CHROOT_DIR/usr/lib/firmware/ath10k/WCN3990/hw1.0"
+          mkdir -p "$ATH10K_DIR"
+
+          for fw_file in firmware-5.bin board.bin board-2.bin; do
+              if [ -s "$ATH10K_DIR/$fw_file" ]; then
+                  echo "  Keeping existing $fw_file ($(du -h "$ATH10K_DIR/$fw_file" | cut -f1))"
+              elif wget -q --timeout=30 -O "$ATH10K_DIR/$fw_file" \
+                      "${LINUX_FW_BASE}/ath10k/WCN3990/hw1.0/${fw_file}"; then
+                  echo "  Downloaded $fw_file ($(du -h "$ATH10K_DIR/$fw_file" | cut -f1))"
+              else
+                  echo "  WARNING: Failed to download $fw_file - WiFi may not work"
+                  rm -f "$ATH10K_DIR/$fw_file"
+              fi
+          done
+
+          # 7c: Adreno 630 firmware (a630_gmu.bin) from linux-firmware.
+          #     The GPU zap shader (a630_zap.mbn) still needs the stock ROM.
+          ADRENO_DIR="$CHROOT_DIR/usr/lib/firmware/qcom"
+          mkdir -p "$ADRENO_DIR"
+          if wget -q --timeout=30 -O "$ADRENO_DIR/a630_gmu.bin" \
+                  "${LINUX_FW_BASE}/qcom/a630_gmu.bin"; then
+              echo "  Downloaded a630_gmu.bin ($(du -h "$ADRENO_DIR/a630_gmu.bin" | cut -f1))"
+          else
+              echo "  WARNING: Failed to download a630_gmu.bin"
+              rm -f "$ADRENO_DIR/a630_gmu.bin"
+          fi
+
+          # -------------------------------------------------------
+          # Step 8/9: Optional final target userspace
+          # -------------------------------------------------------
+          echo "[8/10] Applying userspace profile: $USERSPACE_PROFILE"
+          echo "$USERSPACE_PROFILE" > "$OUTPUT_DIR/userspace.profile"
+          if [ "$USERSPACE_PROFILE" = "none" ]; then
+              echo "  Base image selected; no app stack will be preinstalled."
+          elif [ "$USERSPACE_PROFILE" = "ha" ]; then
+          cp -a "$PROJECT_DIR/rootfs-scripts/kiosk-prototype" "$CHROOT_DIR/opt/razer-ha-kiosk"
+          chmod 0755 "$CHROOT_DIR/opt/razer-ha-kiosk/hakiosk.sh"
+
+          chroot "$CHROOT_DIR" /bin/bash -s <<'CHROOT_EOF'
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+
+          apt update
+          apt install -y \
+              cage \
+              epiphany-browser \
+              seatd \
+              sway \
+              wlr-randr \
+              libinput-tools \
+              wev \
+              evtest
+
+          for group in video input render seat; do
+              getent group "$group" >/dev/null || groupadd -r "$group"
+          done
+          useradd -r -s /usr/sbin/nologin -G video,input,render,seat razer-kiosk 2>/dev/null || true
+          install -d -o razer-kiosk -g razer-kiosk /var/lib/razer-kiosk
+
+          cat > /etc/systemd/system/razer-ha-kiosk.service <<'SERVICE_EOF'
+          [Unit]
+          Description=Razer Phone 2 Home Assistant kiosk prototype
+          After=network-online.target razer-wifi-ready.service
+          Wants=network-online.target razer-wifi-ready.service
+
+          [Service]
+          User=razer-kiosk
+          Environment=XDG_RUNTIME_DIR=/run/razer-kiosk
+          Environment=MOZ_ENABLE_WAYLAND=1
+          ExecStartPre=/usr/bin/install -d -o razer-kiosk -g razer-kiosk /run/razer-kiosk
+          ExecStart=/opt/razer-ha-kiosk/hakiosk.sh
+          Restart=on-failure
+          RestartSec=3
+
+          [Install]
+          WantedBy=multi-user.target
+          SERVICE_EOF
+
+          systemctl enable seatd.service
+          systemctl enable razer-ha-kiosk.service
+          CHROOT_EOF
+          elif [ "$USERSPACE_PROFILE" = "3dprinter" ]; then
+              cp -f "$PROJECT_DIR/config/userspace.env" "$CHROOT_DIR/tmp/userspace.env"
+              chroot "$CHROOT_DIR" /usr/bin/env \
+                  PIP_INDEX_URL=https://pypi.org/simple \
+                  PIP_CACHE_DIR=/var/cache/razer-pip \
+                  /bin/bash -s <<'FINAL_TARGET_EOF'
+          set -euo pipefail
+
+          export DEBIAN_FRONTEND=noninteractive
+          source /tmp/userspace.env
+
+          KLIPPER_USER="${KLIPPER_USER:-klipper}"
+          KLIPPER_HOME="/home/$KLIPPER_USER"
+          DATA_DIR="$KLIPPER_HOME/printer_data"
+          CONFIG_DIR="$DATA_DIR/config"
+          LOG_DIR="$DATA_DIR/logs"
+          COMMS_DIR="$DATA_DIR/comms"
+
+          apt-get update
+          apt-get install -y --no-install-recommends \
+              git \
+              curl \
+              wget \
+              ca-certificates \
+              python3 \
+              python3-dev \
+              python3-venv \
+              python3-pip \
+              build-essential \
+              pkg-config \
+              libffi-dev \
+              libssl-dev \
+              libjpeg-dev \
+              zlib1g-dev \
+              libopenjp2-7 \
+              can-utils \
+              avrdude \
+              gcc-avr \
+              binutils-avr \
+              avr-libc \
+              stm32flash \
+              libnewlib-arm-none-eabi \
+              gcc-arm-none-eabi \
+              binutils-arm-none-eabi \
+              jq
+
+          apt-get install -y --no-install-recommends libturbojpeg || \
+              apt-get install -y --no-install-recommends libturbojpeg0 || true
+          apt-get install -y --no-install-recommends libasound2t64 || \
+              apt-get install -y --no-install-recommends libasound2
+
+          install -d -m 0755 "$CONFIG_DIR" "$LOG_DIR" "$COMMS_DIR" "$DATA_DIR/gcodes" "$DATA_DIR/systemd"
+          chown -R "$KLIPPER_USER:$KLIPPER_USER" "$DATA_DIR"
+          for group in video input render tty; do
+              getent group "$group" >/dev/null || groupadd -r "$group"
+          done
+          usermod -aG video,input,render,tty "$KLIPPER_USER"
+
+          install_repo() {
+              local url="$1"
+              local commit="$2"
+              local dest="$3"
+              if [ ! -d "$dest/.git" ]; then
+                  su -s /bin/bash -c "git clone --filter=blob:none --no-checkout '$url' '$dest'" "$KLIPPER_USER"
+              fi
+              su -s /bin/bash -c "git -C '$dest' fetch --depth=1 origin '$commit'" "$KLIPPER_USER"
+              su -s /bin/bash -c "git -C '$dest' checkout --detach '$commit'" "$KLIPPER_USER"
+          }
+
+          install_repo "$KLIPPER_REPO" "$KLIPPER_COMMIT" "$KLIPPER_HOME/klipper"
+          install_repo "$MOONRAKER_REPO" "$MOONRAKER_COMMIT" "$KLIPPER_HOME/moonraker"
+
+          if [ ! -x "$KLIPPER_HOME/klippy-env/bin/python" ]; then
+              su -s /bin/bash -c "python3 -m venv '$KLIPPER_HOME/klippy-env'" "$KLIPPER_USER"
+          fi
+          su -s /bin/bash -c "'$KLIPPER_HOME/klippy-env/bin/pip' install --upgrade pip wheel" "$KLIPPER_USER"
+          su -s /bin/bash -c "'$KLIPPER_HOME/klippy-env/bin/pip' install -r '$KLIPPER_HOME/klipper/scripts/klippy-requirements.txt'" "$KLIPPER_USER"
+
+          if [ ! -x "$KLIPPER_HOME/moonraker-env/bin/python" ]; then
+              su -s /bin/bash -c "python3 -m venv '$KLIPPER_HOME/moonraker-env'" "$KLIPPER_USER"
+          fi
+          su -s /bin/bash -c "'$KLIPPER_HOME/moonraker-env/bin/pip' install --upgrade pip wheel" "$KLIPPER_USER"
+          su -s /bin/bash -c "'$KLIPPER_HOME/moonraker-env/bin/pip' install -r '$KLIPPER_HOME/moonraker/scripts/moonraker-requirements.txt'" "$KLIPPER_USER"
+
+          if [ ! -f "$CONFIG_DIR/printer.cfg" ]; then
+              cat > "$CONFIG_DIR/printer.cfg" <<'PRINTER_CFG_EOF'
+          [printer]
+          kinematics: none
+          max_velocity: 1
+          max_accel: 1
+
+          [virtual_sdcard]
+          path: ~/printer_data/gcodes
+
+          [display_status]
+
+          [pause_resume]
+          PRINTER_CFG_EOF
+              chown "$KLIPPER_USER:$KLIPPER_USER" "$CONFIG_DIR/printer.cfg"
+          fi
+
+          cat > "$CONFIG_DIR/moonraker.conf" <<MOONRAKER_CFG_EOF
+          [server]
+          host: 0.0.0.0
+          port: 7125
+          klippy_uds_address: $COMMS_DIR/klippy.sock
+
+          [file_manager]
+          enable_object_processing: False
+
+          [authorization]
+          trusted_clients:
+              127.0.0.1
+              192.168.0.0/16
+              10.0.0.0/8
+              172.16.0.0/12
+
+          [machine]
+          provider: systemd_dbus
+          MOONRAKER_CFG_EOF
+          chown "$KLIPPER_USER:$KLIPPER_USER" "$CONFIG_DIR/moonraker.conf"
+
+          cat > /etc/systemd/system/klipper.service <<KLIPPER_SERVICE_EOF
+          [Unit]
+          Description=Klipper 3D Printer Firmware
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=$KLIPPER_USER
+          WorkingDirectory=$KLIPPER_HOME/klipper
+          ExecStart=$KLIPPER_HOME/klippy-env/bin/python $KLIPPER_HOME/klipper/klippy/klippy.py $CONFIG_DIR/printer.cfg -l $LOG_DIR/klippy.log -a $COMMS_DIR/klippy.sock
+          Restart=always
+          RestartSec=10
+
+          [Install]
+          WantedBy=multi-user.target
+          KLIPPER_SERVICE_EOF
+
+          cat > "$DATA_DIR/systemd/moonraker.env" <<MOONRAKER_ENV_EOF
+          MOONRAKER_ARGS="$KLIPPER_HOME/moonraker/moonraker/moonraker.py -d $DATA_DIR -c $CONFIG_DIR/moonraker.conf"
+          MOONRAKER_ENV_EOF
+          chown "$KLIPPER_USER:$KLIPPER_USER" "$DATA_DIR/systemd/moonraker.env"
+
+          cat > /etc/systemd/system/moonraker.service <<MOONRAKER_SERVICE_EOF
+          [Unit]
+          Description=API Server for Klipper SV1
+          Requires=network-online.target
+          After=network-online.target klipper.service
+
+          [Service]
+          Type=simple
+          User=$KLIPPER_USER
+          SupplementaryGroups=sudo
+          WorkingDirectory=$KLIPPER_HOME/moonraker
+          EnvironmentFile=$DATA_DIR/systemd/moonraker.env
+          ExecStart=$KLIPPER_HOME/moonraker-env/bin/python \$MOONRAKER_ARGS
+          Restart=always
+          RestartSec=10
+
+          [Install]
+          WantedBy=multi-user.target
+          MOONRAKER_SERVICE_EOF
+
+          systemctl enable klipper.service
+          systemctl enable moonraker.service
+
+          # Pin HelixScreen to a tested release instead of installing whatever happens
+          # to be latest when a clean rootfs is built.
+          curl -fsSL "$HELIX_INSTALLER_URL" | sh -s -- --version "$HELIX_VERSION"
+
+          HELIX_DIR="$KLIPPER_HOME/helixscreen"
+          # The installer sees a QEMU chroot without a running systemd PID 1 and may use
+          # its SysV fallback, which starts Helix immediately. Stop it before returning;
+          # the real device will start the generated systemd unit on first boot.
+          if [ -x /etc/init.d/S90helixscreen ]; then
+              /etc/init.d/S90helixscreen stop 2>/dev/null || true
+          fi
+          pkill -x helix-watchdog 2>/dev/null || true
+          pkill -x helix-screen 2>/dev/null || true
+          pkill -x helix-splash 2>/dev/null || true
+
+          if [ -f "$HELIX_DIR/config/helixscreen.service" ]; then
+              sed \
+                  -e "s|@@HELIX_USER@@|$KLIPPER_USER|g" \
+                  -e "s|@@HELIX_GROUP@@|$KLIPPER_USER|g" \
+                  -e "s|@@INSTALL_DIR@@|$HELIX_DIR|g" \
+                  -e "s|@@INSTALL_PARENT@@|$KLIPPER_HOME|g" \
+                  "$HELIX_DIR/config/helixscreen.service" > /etc/systemd/system/helixscreen.service
+          fi
+
+          if [ -f /etc/systemd/system/helixscreen.service ]; then
+              mkdir -p /etc/systemd/system/helixscreen.service.d
+              cat > /etc/systemd/system/helixscreen.service.d/razer-fbdev.conf <<'HELIX_OVERRIDE_EOF'
+          [Service]
+          Environment="HELIX_DISPLAY_BACKEND=fbdev"
+          Environment="HELIX_DISPLAY_ROTATION=90"
+          Environment="HELIX_COLOR_SWAP_RB=1"
+          Environment="HELIX_TOUCH_DEVICE=/dev/input/event0"
+          Environment="HELIX_MOUSE_DEVICE="
+          HELIX_OVERRIDE_EOF
+              systemctl enable helixscreen.service
+          fi
+
+          for cfg in \
+              "$KLIPPER_HOME/helixscreen/config/settings.json" \
+              "$CONFIG_DIR/helixscreen/settings.json" \
+              /opt/helixscreen/config/settings.json \
+              /root/helixscreen/config/settings.json; do
+              [ -f "$cfg" ] || continue
+              python3 - "$cfg" <<'PYEOF'
+          import json
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          data = json.loads(path.read_text())
+          data["active_printer_id"] = data.get("active_printer_id", "default")
+          data["wizard_completed"] = True
+          data.setdefault("display", {})
+          data["display"]["drm_device"] = ""
+          data["display"]["rotate"] = 90
+          data["display"]["rotation_probed"] = True
+          printers = data.setdefault("printers", {})
+          printer = printers.setdefault("default", {})
+          printer["moonraker_host"] = "127.0.0.1"
+          printer["moonraker_port"] = 7125
+          printer["moonraker_api_key"] = False
+          path.write_text(json.dumps(data, indent=2) + "\n")
+          PYEOF
+              chown "$KLIPPER_USER:$KLIPPER_USER" "$cfg" 2>/dev/null || true
+          done
+
+          systemctl daemon-reload
+          apt-get clean
+          FINAL_TARGET_EOF
+
+              chroot "$CHROOT_DIR" /bin/sh -c \
+                  'pkill -x helix-watchdog 2>/dev/null || true; pkill -x helix-screen 2>/dev/null || true; pkill -x helix-splash 2>/dev/null || true'
+          else
+              echo "ERROR: userspace profile installer is missing for: $USERSPACE_PROFILE"
+              exit 1
+          fi
+
+          # Keep the full build and validation refresh on the same runtime overlay path.
+          # This must run after firmware is installed so it can create firmware aliases
+          # and enable tqftpserv on the first reproducible build.
+          echo "[9/10] Applying runtime config overlay..."
+          chroot "$CHROOT_DIR" /bin/bash -s <<'RUNTIME_CONFIG_EOF'
+          set -euo pipefail
+
+          if [ ! -x /usr/local/bin/usb-gadget-setup.sh ]; then
+              echo "ERROR: /usr/local/bin/usb-gadget-setup.sh is missing or not executable"
+              exit 1
+          fi
+
+          # NetworkManager owns WiFi. The USB gadget has a static address and must not be
+          # reconfigured by NetworkManager during boot.
+          mkdir -p /etc/NetworkManager/conf.d
+          cat > /etc/NetworkManager/conf.d/10-unmanaged-usb-gadget.conf << 'NM_USB_EOF'
+          [keyfile]
+          unmanaged-devices=interface-name:usb0
+          NM_USB_EOF
+
+          # ath10k_snoc may receive an invalid MAC from WLAN firmware and otherwise picks
+          # a new random address each boot. A device-specific factory MAC can be supplied
+          # through /etc/razerphone2linux/device.env; never bake one phone's MAC into a
+          # public image.
+          if [ -f /etc/razerphone2linux/device.env ]; then
+              # shellcheck disable=SC1091
+              source /etc/razerphone2linux/device.env
+          fi
+
+          if [[ "${RAZER_WLAN_MAC:-}" =~ ^([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}$ ]] &&
+             [ "$RAZER_WLAN_MAC" != "00:00:00:00:00:00" ]; then
+              mkdir -p /etc/systemd/network
+              cat > /etc/systemd/network/10-wlan0-mac.link << WLAN_LINK_EOF
+          [Match]
+          OriginalName=wlan0
+
+          [Link]
+          MACAddress=${RAZER_WLAN_MAC}
+          WLAN_LINK_EOF
+
+              # NetworkManager must not randomise the MAC for scans or connections.
+              cat > /etc/NetworkManager/conf.d/20-wlan-mac.conf << NM_WLAN_EOF
+          [device-wlan-rand]
+          match-device=interface-name:wlan0
+          wifi.scan-rand-mac-address=no
+
+          [connection-wlan-mac]
+          match-device=interface-name:wlan0
+          wifi.cloned-mac-address=${RAZER_WLAN_MAC}
+          NM_WLAN_EOF
+          else
+              rm -f /etc/systemd/network/10-wlan0-mac.link
+              rm -f /etc/NetworkManager/conf.d/20-wlan-mac.conf
+          fi
+
+          systemctl enable NetworkManager 2>/dev/null || true
+
+          cat > /etc/systemd/system/razer-wifi-ready.service <<'WIFI_READY_EOF'
+          [Unit]
+          Description=Wait for Razer Phone 2 WiFi before network-dependent services
+          Wants=NetworkManager.service tqftpserv.service rmtfs.service
+          After=systemd-modules-load.service NetworkManager.service tqftpserv.service rmtfs.service
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/sbin/razer-wifi-ready
+          RemainAfterExit=yes
+
+          [Install]
+          WantedBy=multi-user.target
+          WIFI_READY_EOF
+          systemctl enable razer-wifi-ready.service 2>/dev/null || true
+
+          cat > /etc/systemd/system/resizefs.service << 'RESIZE_EOF'
+          [Unit]
+          Description=Expand root filesystem to fill partition
+          After=local-fs.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/bin/bash -c 'exec /usr/sbin/resize2fs $(findmnt -nvo SOURCE /)'
+          ExecStartPost=/usr/bin/systemctl disable resizefs.service
+          RemainAfterExit=true
+
+          [Install]
+          WantedBy=default.target
+          RESIZE_EOF
+          systemctl enable resizefs.service 2>/dev/null || true
+
+          cat > /etc/systemd/system/serial-getty@ttyMSM0.service << 'UART_EOF'
+          [Unit]
+          Description=Serial Console on ttyMSM0 (UART Debug)
+
+          [Service]
+          ExecStart=-/usr/sbin/agetty -L 115200 ttyMSM0 xterm-256color
+          Type=idle
+          Restart=always
+          RestartSec=0
+
+          [Install]
+          WantedBy=multi-user.target
+          UART_EOF
+          systemctl enable serial-getty@ttyMSM0.service 2>/dev/null || true
+
+          cat > /etc/systemd/system/serial-getty@ttyGS0.service << 'USB_EOF'
+          [Unit]
+          Description=Serial Console on ttyGS0 (USB Gadget)
+
+          [Service]
+          ExecStart=-/usr/sbin/agetty -L 115200 ttyGS0 xterm-256color
+          Type=idle
+          Restart=always
+          RestartSec=0
+
+          [Install]
+          WantedBy=multi-user.target
+          USB_EOF
+          systemctl enable serial-getty@ttyGS0.service 2>/dev/null || true
+
+          cat > /etc/systemd/system/usb-gadget.service << 'GADGET_SERVICE_EOF'
+          [Unit]
+          Description=USB ACM serial + NCM ethernet gadget
+          DefaultDependencies=no
+          After=systemd-modules-load.service local-fs.target
+          Before=sysinit.target
+          Before=serial-getty@ttyGS0.service
+
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          ExecStart=/usr/local/bin/usb-gadget-setup.sh
+
+          [Install]
+          WantedBy=sysinit.target
+          GADGET_SERVICE_EOF
+          systemctl enable usb-gadget.service 2>/dev/null || true
+
+          mkdir -p /etc/systemd/system/serial-getty@ttyGS0.service.d
+          cat > /etc/systemd/system/serial-getty@ttyGS0.service.d/after-usb-gadget.conf << 'GADGET_DROPIN_EOF'
+          [Unit]
+          After=usb-gadget.service
+          Wants=usb-gadget.service
+          GADGET_DROPIN_EOF
+
+          cat > /etc/modules-load.d/razer-aura.conf << 'MODULES_EOF'
+          # Razer Phone 2 kernel modules (June-proven set).
+          # Keep MDSS/DSI/MSM DRM out of the default path. The practical display path is
+          # bootloader framebuffer -> simpledrm/fbdev (native NT36830 panel comes later).
+          # qcom_q6v5_mss must load early: rmtfs -P needs the mss remoteproc device to
+          # exist before it starts, and the modem itself waits for the RFS QMI service.
+          qcom_sysmon
+          qcom_q6v5_mss
+          ath10k_core
+          ath10k_snoc
+          # Touchscreen
+          rmi_i2c
+          MODULES_EOF
+
+          # Only IPA is kept away from autoload: bringing it up while the modem stack
+          # is broken or the modem is down hard-resets the SoC ~30s later (TZ/XPU
+          # class, silent). razer-wifi-ready loads it after verifying the pmOS-
+          # documented userspace set (rmtfs/pd-mapper/tqftpserv/qrtr-ns) and a running
+          # modem. Note: blacklist only blocks udev alias autoload; the guarded
+          # explicit modprobe in razer-wifi-ready still works.
+          cat > /etc/modprobe.d/razer-staged-bringup.conf << 'STAGED_EOF'
+          blacklist ipa
+          STAGED_EOF
+
+          # The modem userspace stack must survive early races (pd-mapper needs qrtr,
+          # rmtfs -P needs the mss rproc device): retry forever instead of dying to
+          # the default start-limit after 5 attempts.
+          mkdir -p /etc/systemd/system/pd-mapper.service.d
+          cat > /etc/systemd/system/pd-mapper.service.d/razer-resilience.conf << 'PDM_RES_EOF'
+          [Unit]
+          After=qrtr-ns.service systemd-modules-load.service
+          StartLimitIntervalSec=0
+
+          [Service]
+          Restart=on-failure
+          RestartSec=2
+          PDM_RES_EOF
+
+          mkdir -p /etc/systemd/system/rmtfs.service.d
+          cat > /etc/systemd/system/rmtfs.service.d/razer-resilience.conf << 'RMTFS_RES_EOF'
+          [Unit]
+          After=systemd-modules-load.service
+          StartLimitIntervalSec=0
+
+          [Service]
+          RestartSec=2
+          RMTFS_RES_EOF
+
+          # Warm reboot used to hang in an RCU-stall storm: systemd stops the QMI
+          # userspace (tqftpserv/rmtfs/...) while the remoteprocs are still running,
+          # and the modem teardown then stalls cpu1's timer softirq forever. Stop the
+          # remoteprocs FIRST on shutdown: this unit starts after the modem stack, so
+          # its ExecStop runs before those services stop (reverse order).
+          cat > /etc/systemd/system/razer-modem-stop.service << 'MODEM_STOP_EOF'
+          [Unit]
+          Description=Stop Qualcomm remoteprocs before the QMI userspace goes away
+          After=rmtfs.service pd-mapper.service tqftpserv.service qrtr-ns.service razer-wifi-ready.service
+
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          ExecStart=/bin/true
+          ExecStop=/bin/sh -c 'for r in /sys/class/remoteproc/remoteproc*; do [ "$(cat $r/state 2>/dev/null)" = "running" ] && echo stop > $r/state 2>/dev/null; done; true'
+          TimeoutStopSec=20
+
+          [Install]
+          WantedBy=multi-user.target
+          MODEM_STOP_EOF
+          systemctl enable razer-modem-stop.service 2>/dev/null || true
+
+          rm -f /etc/modprobe.d/razer-late-modem-test.conf
+
+          cat > /etc/modprobe.d/razer-no-kernel-pdmapper.conf << 'PDM_BLACKLIST_EOF'
+          # Follow the SDM845 userspace pd-mapper path. Keep the in-kernel mapper out if
+          # a future config accidentally builds it again.
+          blacklist qcom_pd_mapper
+          install qcom_pd_mapper /bin/false
+          PDM_BLACKLIST_EOF
+
+          cat > /usr/local/sbin/razer-wifi-late-start << 'LATE_WIFI_EOF'
+          #!/bin/sh
+          set -eu
+
+          MSS=""
+
+          if ! lsmod | grep -q '^qcom_q6v5_mss '; then
+              modprobe qcom_q6v5_mss
+          fi
+          sleep 1
+
+          for r in /sys/class/remoteproc/remoteproc*; do
+              [ -e "$r/name" ] || continue
+              if [ "$(cat "$r/name" 2>/dev/null || true)" = "4080000.remoteproc" ]; then
+                  MSS="$r"
+                  break
+              fi
+          done
+
+          if [ -z "$MSS" ]; then
+              echo "MSS_NOT_FOUND"
+              exit 3
+          fi
+
+          echo disabled > "$MSS/recovery" 2>/dev/null || true
+          systemctl reset-failed rmtfs.service 2>/dev/null || true
+          systemctl restart rmtfs.service 2>/dev/null || true
+          sleep 2
+
+          state="$(cat "$MSS/state" 2>/dev/null || true)"
+          echo "MSS state before=$state"
+
+          if [ "$state" != "running" ]; then
+              echo start > "$MSS/state" || true
+          fi
+
+          sleep 2
+          echo "MSS state after start=$(cat "$MSS/state" 2>/dev/null || true)"
+
+          echo "=== load ath10k ==="
+          modprobe ath10k_core || true
+          modprobe ath10k_snoc || true
+
+          for i in 1 2 3 4 5 6 7 8; do
+              echo "=== poll $i ==="
+              cat "$MSS/name" "$MSS/state" "$MSS/recovery" 2>/dev/null || true
+              ip -br link
+              ls -la /sys/class/ieee80211 2>/dev/null || true
+              qrtr-lookup 2>/dev/null | grep -E '(^ *69|WLFW|wlan|Service|  *66|  *43|  *14|  *64|4096)' || true
+              sleep 5
+          done
+
+          echo "=== rmtfs ==="
+          journalctl -u rmtfs -b --no-pager | tail -120 || true
+
+          echo "=== tqftpserv ==="
+          journalctl -u tqftpserv -b --no-pager | tail -120 || true
+
+          echo "=== dmesg tail ==="
+          dmesg --time-format=iso |
+              egrep -i 'remoteproc|q6v5|mpss|mba|modem|fatal|crash|ipa|ath10k|wlan|wifi|wlfw|qrtr|tftp|servreg|pd_mapper|rmtfs|glink|firmware' |
+              tail -220
+          LATE_WIFI_EOF
+          chmod 0755 /usr/local/sbin/razer-wifi-late-start
+
+          if [ -f /usr/lib/firmware/qcom/sdm845/Razer/aura/wlanmdsp.mbn ]; then
+              mkdir -p /usr/lib/firmware/qcom/sdm845 /lib/firmware/qcom/sdm845
+              ln -sfn Razer/aura/wlanmdsp.mbn /usr/lib/firmware/qcom/sdm845/wlanmdsp.mbn
+              ln -sfn Razer/aura/wlanmdsp.mbn /lib/firmware/qcom/sdm845/wlanmdsp.mbn
+
+              mkdir -p /lib/firmware/image /readonly/firmware /readonly/vendor/firmware /readonly/vendor/firmware_mnt/image
+              ln -sfn ../qcom/sdm845/Razer/aura/wlanmdsp.mbn /lib/firmware/image/wlanmdsp.mbn
+              for jsn in modemr.jsn modemuw.jsn; do
+                  if [ -f "/usr/lib/firmware/qcom/sdm845/Razer/aura/$jsn" ]; then
+                      cp -f "/usr/lib/firmware/qcom/sdm845/Razer/aura/$jsn" "/lib/firmware/image/$jsn"
+                  fi
+              done
+              ln -sfn /lib/firmware/image /readonly/firmware/image
+              ln -sfn /lib/firmware/qcom/sdm845/Razer/aura/wlanmdsp.mbn /readonly/vendor/firmware/wlanmdsp.mbn
+              ln -sfn /lib/firmware/qcom/sdm845/Razer/aura/wlanmdsp.mbn /readonly/vendor/firmware_mnt/image/wlanmdsp.mbn
+          fi
+
+          if [ -x /usr/bin/tqftpserv ] || [ -x /usr/local/bin/tqftpserv ]; then
+              if [ ! -f /etc/systemd/system/tqftpserv.service ] &&
+                 [ ! -f /usr/lib/systemd/system/tqftpserv.service ] &&
+                 [ ! -f /lib/systemd/system/tqftpserv.service ]; then
+                  cat > /etc/systemd/system/tqftpserv.service <<'TQFTP_SERVICE_EOF'
+          [Unit]
+          Description=QRTR TFTP service
+          After=qrtr-ns.service
+          Wants=qrtr-ns.service
+
+          [Service]
+          ExecStart=/usr/bin/tqftpserv
+          Restart=always
+          RestartSec=1
+
+          [Install]
+          WantedBy=multi-user.target
+          TQFTP_SERVICE_EOF
+              fi
+              systemctl enable tqftpserv.service 2>/dev/null || true
+          fi
+
+          if [ -x /usr/local/bin/pd-mapper ]; then
+              cat > /etc/systemd/system/pd-mapper.service <<'PDM_SERVICE_EOF'
+          [Unit]
+          Description=Qualcomm Protection Domain Mapper
+          After=systemd-modules-load.service
+          Before=rmtfs.service tqftpserv.service
+
+          [Service]
+          ExecStart=/usr/local/bin/pd-mapper
+          Restart=always
+          RestartSec=1
+
+          [Install]
+          WantedBy=multi-user.target
+          PDM_SERVICE_EOF
+              systemctl enable pd-mapper.service 2>/dev/null || true
+          else
+              echo "WARNING: /usr/local/bin/pd-mapper missing; userspace pd-mapper service not installed"
+          fi
+
+          if [ -x /usr/local/bin/rmtfs-razer-test ]; then
+              mkdir -p /etc/systemd/system/rmtfs.service.d
+              cat > /etc/systemd/system/rmtfs.service.d/razer-nvdef.conf <<'RMTFS_RAZER_EOF'
+          [Service]
+          ExecStart=
+          ExecStart=/usr/local/bin/rmtfs-razer-test -r -P -s -v
+          RMTFS_RAZER_EOF
+              if [ "${RAZER_MSS_DIAG_MANUAL:-0}" = "1" ]; then
+                  mkdir -p /etc/razerphone2linux
+                  cat > /etc/razerphone2linux/mss-diagnostic-mode <<'MSS_DIAG_EOF'
+          RAZER_MSS_DIAG_MANUAL=1
+          rmtfs.service is intentionally disabled.
+          Use /usr/local/sbin/razer-wifi-late-start or a controlled evidence script over SSH.
+          MSS_DIAG_EOF
+                  systemctl disable rmtfs.service 2>/dev/null || true
+                  systemctl reset-failed rmtfs.service 2>/dev/null || true
+              else
+                  rm -f /etc/razerphone2linux/mss-diagnostic-mode 2>/dev/null || true
+                  systemctl enable rmtfs.service 2>/dev/null || true
+              fi
+          fi
+
+
+          cat > /usr/local/bin/razer-display-keepalive.sh <<'DISPLAY_KEEPALIVE_EOF'
+          #!/bin/bash
+          set -euo pipefail
+
+          # Keep the bootloader scanout path visible while MDSS/DSI remains disabled.
+          # Safety rule: do not raise panel backlight or WLED brightness automatically.
+          # The live device has shown unsafe full-brightness behavior when PMI8998 WLED is
+          # exposed without Razer-specific limits. Backlight tests must be explicit,
+          # manual, low brightness, and short lived.
+          if [ -w /sys/class/graphics/fb0/blank ]; then
+              echo 0 > /sys/class/graphics/fb0/blank || true
+          fi
+          DISPLAY_KEEPALIVE_EOF
+          chmod 0755 /usr/local/bin/razer-display-keepalive.sh
+
+          cat > /etc/systemd/system/razer-display-keepalive.service <<'DISPLAY_SERVICE_EOF'
+          [Unit]
+          Description=Keep Razer bootloader framebuffer visible
+          After=systemd-udev-settle.service
+          Wants=systemd-udev-settle.service
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/bin/razer-display-keepalive.sh
+          RemainAfterExit=yes
+
+          [Install]
+          WantedBy=multi-user.target
+          DISPLAY_SERVICE_EOF
+          systemctl enable razer-display-keepalive.service 2>/dev/null || true
+
+          systemctl disable apt-daily.timer 2>/dev/null || true
+          systemctl disable apt-daily-upgrade.timer 2>/dev/null || true
+          systemctl disable fstrim.timer 2>/dev/null || true
+
+          systemctl daemon-reload 2>/dev/null || true
+          RUNTIME_CONFIG_EOF
+
+          # -------------------------------------------------------
+          # Step 10: Cleanup and unmount
+          # -------------------------------------------------------
+          echo "[10/10] Cleaning up and creating sparse image..."
+
+          # Final cleanup inside chroot. Do not run apt clean here: /var/cache/apt/archives
+          # is a host-side bind mount used to speed up future full rootfs builds.
+          chroot "$CHROOT_DIR" bash -c "
+              rm -rf /tmp/* /var/tmp/*
+              rm -rf /home/klipper/.cache/pip
+              rm -rf /var/lib/apt/lists/*
+              find /var/log -type f -exec truncate -s 0 {} +
+          "
+
+          # Unmount virtual filesystems
+          umount "$CHROOT_DIR/var/cache/apt/archives" 2>/dev/null || true
+          umount "$CHROOT_DIR/var/cache/razer-pip" 2>/dev/null || true
+          umount "$CHROOT_DIR/proc" 2>/dev/null || true
+          umount "$CHROOT_DIR/dev/pts" 2>/dev/null || true
+          umount "$CHROOT_DIR/dev" 2>/dev/null || true
+          umount "$CHROOT_DIR/sys" 2>/dev/null || true
+
+          # Unmount rootfs
+          umount "$CHROOT_DIR"
+
+          # Compact free ext4 blocks before creating the Android sparse image. img2simg
+          # only omits zero-filled blocks; stale non-zero free space makes userdata
+          # flashes much slower without adding useful rootfs content.
+          if command -v e2fsck >/dev/null 2>&1; then
+              e2fsck -fy "$ROOTFS_IMG"
+          fi
+          if command -v zerofree >/dev/null 2>&1; then
+              zerofree "$ROOTFS_IMG"
+          else
+              echo "  WARNING: zerofree is not installed; rootfs-sparse.img may include stale ext4 free blocks."
+          fi
+
+          # Create Android sparse image for fastboot
+          SPARSE_IMG="$OUTPUT_DIR/rootfs-sparse.img"
+          img2simg "$ROOTFS_IMG" "$SPARSE_IMG"
+          cp -f "$ROOTFS_IMG" "$OUTPUT_ROOTFS_IMG"
+
+          mkdir -p "$WIN_OUTPUT_DIR"
+          cp -f "$OUTPUT_ROOTFS_IMG" "$WIN_OUTPUT_DIR/rootfs.img"
+          cp -f "$SPARSE_IMG" "$WIN_OUTPUT_DIR/rootfs-sparse.img"
+          cp -f "$OUTPUT_DIR/rootfs.kernel-release" "$WIN_OUTPUT_DIR/rootfs.kernel-release"
+          cp -f "$OUTPUT_DIR/userspace.profile" "$WIN_OUTPUT_DIR/userspace.profile"
+          cp -f "$OUTPUT_DIR/initrd.img-$KERNEL_VERSION" "$WIN_OUTPUT_DIR/initrd.img-$KERNEL_VERSION"
+          cp -f "$OUTPUT_DIR/initrd.img" "$WIN_OUTPUT_DIR/initrd.img"
+          if [ -f "$KERNEL_RELEASE_FILE" ]; then
+              cp -f "$KERNEL_RELEASE_FILE" "$WIN_OUTPUT_DIR/kernel.release"
+          fi
+
+          echo ""
+          echo "========================================"
+          echo " Rootfs build complete!"
+          echo "========================================"
+          echo ""
+          echo "Outputs:"
+          echo "  Raw image:    $OUTPUT_ROOTFS_IMG"
+          echo "  Sparse image: $SPARSE_IMG"
+          echo ""
+          echo "Configuration:"
+          echo "  User:     $USERNAME / $USER_PASSWORD"
+          echo "  Root:     root / $USER_PASSWORD"
+          echo "  Hostname: $HOSTNAME"
+          echo "  SSH:      enabled"
+          echo "  WiFi:     use 'nmtui' or 'nmcli' after boot"
+          echo "  Userspace profile: $USERSPACE_PROFILE"
+          echo ""
+          echo "  Serial debug:  ttyMSM0 (UART) and ttyGS0 (USB gadget)"
+          echo ""
+          echo "IMPORTANT: Change passwords after first boot!"
+          echo ""
+          echo "Next: Run bash 04-make-boot-image.sh"
+          ROOTFS_BUILD_EOF
 
       - name: Package boot image
         shell: bash
         run: |
+          # ==========================================================================
+          # Razer Phone 2 (aura) - Boot Image Creator
+          # ==========================================================================
+          # Creates an Android-compatible boot.img for the Razer Phone 2 using
+          # the compiled mainline Linux kernel and device tree blob.
+          #
+          # Usage:
+          #   bash 04-make-boot-image.sh
+          #   RAZER_BOOT_DISPLAY_MODE=console bash 04-make-boot-image.sh
+          #
+          # Prerequisites:
+          #   - Run 02-build-kernel.sh first (kernel + DTB needed)
+          #   - Run 03-build-rootfs.sh first (rootfs sparse image needed)
+          # ==========================================================================
+
           set -euo pipefail
-          bash scripts/04-make-boot-image.sh
+
+          WORKDIR="${RAZER_WORKDIR:-$HOME/razorphone2linux}"
+          PROJECT_DIR="$GITHUB_WORKSPACE"
+          source "$PROJECT_DIR/config/build.env"
+          IMAGE_PROFILE="${RAZER_IMAGE_PROFILE:-base}"
+          case "$IMAGE_PROFILE" in
+              base) ;;
+              *) echo "ERROR: RAZER_IMAGE_PROFILE must be base."; exit 2 ;;
+          esac
+          USERSPACE_PROFILE="${RAZER_USERSPACE_PROFILE:-none}"
+          case "$USERSPACE_PROFILE" in
+              none|ha|3dprinter) ;;
+              *) echo "ERROR: RAZER_USERSPACE_PROFILE must be none, ha, or 3dprinter."; exit 2 ;;
+          esac
+          OUTPUT_DIR="$WORKDIR/output/$IMAGE_PROFILE"
+          BOOT_IMG="$OUTPUT_DIR/boot.img"
+          WIN_OUTPUT_DIR="$PROJECT_DIR/output/$IMAGE_PROFILE"
+          LOCAL_MKBOOTIMG="$WORKDIR/mkbootimg-tool/mkbootimg.py"
+          KERNEL_RELEASE_FILE="$OUTPUT_DIR/kernel.release"
+          ROOTFS_RELEASE_FILE="$OUTPUT_DIR/rootfs.kernel-release"
+          ROOTFS_USERSPACE_FILE="$OUTPUT_DIR/userspace.profile"
+          KERNEL_FLAVOR_FILE="$OUTPUT_DIR/kernel.flavor"
+          DISPLAY_MODE="${RAZER_BOOT_DISPLAY_MODE:-normal}"
+
+          mkdir -p "$OUTPUT_DIR" "$WIN_OUTPUT_DIR"
+
+          # "helix" was the historical name of the normal mode (HelixScreen era).
+          [ "$DISPLAY_MODE" = "helix" ] && DISPLAY_MODE=normal
+          case "$DISPLAY_MODE" in
+              normal|console) ;;
+              *)
+                  echo "ERROR: RAZER_BOOT_DISPLAY_MODE must be 'normal' or 'console'."
+                  exit 2
+                  ;;
+          esac
+
+          echo "========================================"
+          echo " Razer Phone 2 - Boot Image Creator"
+          echo "========================================"
+          echo "Display mode: $DISPLAY_MODE"
+          echo "Image profile: $IMAGE_PROFILE"
+          echo "Userspace profile: $USERSPACE_PROFILE"
+
+          if [ -f "$LOCAL_MKBOOTIMG" ]; then
+              MKBOOTIMG_CMD=(python3 "$LOCAL_MKBOOTIMG")
+          elif command -v mkbootimg &>/dev/null; then
+              MKBOOTIMG_CMD=(mkbootimg)
+          else
+              echo "ERROR: mkbootimg tool not found. Expected $LOCAL_MKBOOTIMG or mkbootimg in PATH."
+              exit 1
+          fi
+
+          # -------------------------------------------------------
+          # Verify prerequisites
+          # -------------------------------------------------------
+          if [ ! -f "$OUTPUT_DIR/Image.gz" ]; then
+              echo "ERROR: Kernel image not found at $OUTPUT_DIR/Image.gz"
+              echo "Please run 02-build-kernel.sh first."
+              exit 1
+          fi
+
+          if [ ! -f "$OUTPUT_DIR/sdm845-razer-aura.dtb" ]; then
+              echo "ERROR: Device tree blob not found at $OUTPUT_DIR/sdm845-razer-aura.dtb"
+              echo "Please run 02-build-kernel.sh first."
+              exit 1
+          fi
+
+          if [ ! -f "$KERNEL_RELEASE_FILE" ]; then
+              echo "ERROR: $KERNEL_RELEASE_FILE not found."
+              echo "Run 02-build-kernel.sh first so boot/rootfs use the same kernel release."
+              exit 1
+          fi
+
+          KERNEL_RELEASE=$(tr -d '\r\n' < "$KERNEL_RELEASE_FILE")
+          if [ ! -d "$OUTPUT_DIR/modules_install/lib/modules/$KERNEL_RELEASE" ]; then
+              echo "ERROR: modules for kernel release '$KERNEL_RELEASE' are missing."
+              echo "Expected: $OUTPUT_DIR/modules_install/lib/modules/$KERNEL_RELEASE"
+              exit 1
+          fi
+
+          if [ ! -f "$OUTPUT_DIR/rootfs-sparse.img" ] || [ ! -f "$ROOTFS_RELEASE_FILE" ]; then
+              echo "ERROR: rootfs-sparse.img or rootfs.kernel-release is missing."
+              echo "Run 03-build-rootfs.sh after 02-build-kernel.sh before packaging boot.img."
+              exit 1
+          fi
+
+          ROOTFS_RELEASE=$(tr -d '\r\n' < "$ROOTFS_RELEASE_FILE")
+          if [ "$ROOTFS_RELEASE" != "$KERNEL_RELEASE" ]; then
+              if [ "${RAZER_ALLOW_KERNEL_MISMATCH:-0}" = "1" ]; then
+                  # Legitimate for dual-kernel rootfs images (both module trees are
+                  # kept on disk so an older kernel remains a boot-only rollback).
+                  echo "WARNING: rootfs last refreshed for '$ROOTFS_RELEASE', boot kernel is '$KERNEL_RELEASE' (override active)."
+              else
+                  echo "ERROR: rootfs modules were built for '$ROOTFS_RELEASE' but boot kernel is '$KERNEL_RELEASE'."
+                  echo "Rebuild in order: 02-build-kernel.sh -> 03-build-rootfs.sh -> 04-make-boot-image.sh"
+                  echo "Set RAZER_ALLOW_KERNEL_MISMATCH=1 only for dual-kernel rootfs images."
+                  exit 1
+              fi
+          fi
+
+          if [ -f "$ROOTFS_USERSPACE_FILE" ]; then
+              ROOTFS_USERSPACE=$(tr -d '\r\n' < "$ROOTFS_USERSPACE_FILE")
+              if [ "$ROOTFS_USERSPACE" != "$USERSPACE_PROFILE" ]; then
+                  echo "ERROR: rootfs userspace profile is '$ROOTFS_USERSPACE' but boot packaging requested '$USERSPACE_PROFILE'."
+                  echo "Rebuild or refresh rootfs with matching RAZER_USERSPACE_PROFILE."
+                  exit 1
+              fi
+          fi
+
+          # -------------------------------------------------------
+          # Step 1: Create combined Image.gz-dtb
+          # -------------------------------------------------------
+          echo "[1/4] Creating combined kernel + DTB image..."
+          cat "$OUTPUT_DIR/Image.gz" "$OUTPUT_DIR/sdm845-razer-aura.dtb" \
+              > "$OUTPUT_DIR/Image.gz-dtb"
+          echo "  Created Image.gz-dtb ($(du -h "$OUTPUT_DIR/Image.gz-dtb" | cut -f1))"
+
+          # -------------------------------------------------------
+          # Step 2: Use Ubuntu initramfs-tools initrd from the rootfs
+          # -------------------------------------------------------
+          echo "[2/4] Validating Ubuntu initramfs-tools initrd..."
+
+          INITRD_VERSIONED="$OUTPUT_DIR/initrd.img-$KERNEL_RELEASE"
+          RAMDISK="$OUTPUT_DIR/initrd.img"
+
+          if [ ! -f "$INITRD_VERSIONED" ]; then
+              echo "ERROR: expected initramfs-tools initrd missing:"
+              echo "  $INITRD_VERSIONED"
+              echo "Run scripts/03-refresh-rootfs.sh after scripts/02-build-kernel.sh."
+              exit 1
+          fi
+
+          cp -f "$INITRD_VERSIONED" "$RAMDISK"
+
+          if [ ! -s "$RAMDISK" ]; then
+              echo "ERROR: initrd is empty: $RAMDISK"
+              exit 1
+          fi
+
+          if command -v lsinitramfs >/dev/null 2>&1; then
+              INITRD_LIST="$OUTPUT_DIR/initrd-files.txt"
+              lsinitramfs "$RAMDISK" > "$INITRD_LIST"
+              grep -qx 'init' "$INITRD_LIST" || {
+                  echo "ERROR: initrd does not contain /init."
+                  exit 1
+              }
+              if grep -q 'initramfs/init-boot.sh' "$INITRD_LIST"; then
+                  echo "ERROR: normal boot initrd unexpectedly contains the legacy custom initramfs."
+                  exit 1
+              fi
+              if ! grep -Eq '(^usr/lib/udev/|^lib/systemd/systemd-udevd$|^usr/lib/systemd/systemd-udevd$|^sbin/udevd$)' "$INITRD_LIST"; then
+                  echo "ERROR: initrd does not appear to contain udev; by-partlabel root discovery may fail."
+                  exit 1
+              fi
+          else
+              echo "WARNING: lsinitramfs not available; initrd content validation skipped."
+          fi
+
+          echo "  Using initrd: $RAMDISK ($(du -h "$RAMDISK" | cut -f1))"
+
+          # -------------------------------------------------------
+          # Step 3: Create boot.img
+          # -------------------------------------------------------
+          echo "[3/4] Creating boot.img..."
+
+          # Kernel command line for mainline Linux on Razer Phone 2.
+          # Root selection is handled inside initramfs-tools via
+          # /etc/initramfs-tools/conf.d/razer-root and
+          # /etc/initramfs-tools/scripts/local-top/razer-root. This avoids fighting
+          # Android bootloaders that append their stock root=/dev/dm-* argument.
+          # The initramfs root value must be a bootloader-compatible /dev path such as
+          # /dev/disk/by-partlabel/userdata; do not pass PARTLABEL=userdata to the
+          # kernel's early VFS root parser.
+          # Keep the final ttyMSM0 console for the SDM845 display race workaround.
+          # module_blacklist=ipa: kernel-level guard — loading IPA on this rootfs
+          # hard-resets the SoC ~30s later even with a healthy modem stack
+          # (2026-07-03). WiFi works fully without it; see razer-wifi-ready.sh.
+          CMDLINE_COMMON="earlycon=msm_geni_serial,0xA84000 console=ttyMSM0,115200n8 clk_ignore_unused pd_ignore_unused fw_devlink=permissive rootfstype=ext4 rw loglevel=7 pcie_aspm=off module_blacklist=ipa init=/usr/lib/systemd/systemd"
+          case "$DISPLAY_MODE" in
+              normal)
+                  # Normal boot (UI endgame: Home Assistant dashboard).
+                  # Boot-log policy: kernel + initramfs messages stay visible on the
+                  # panel (console=tty0 last, loglevel=6, no quiet). Once rootfs is up,
+                  # razer-quiet-console.service (gated on razer_quiet_console below)
+                  # drops the console loglevel so the screen goes quiet; systemd status
+                  # lines are suppressed throughout since rootfs output is not needed.
+                  CMDLINE="$CMDLINE_COMMON vt.global_cursor_default=0 razer_fb_clear=0 console=tty0 loglevel=6 systemd.show_status=false rd.systemd.show_status=false razer_quiet_console"
+                  if [ "$USERSPACE_PROFILE" = "none" ]; then
+                      CMDLINE="$CMDLINE razer_panel_idle_blank"
+                  fi
+                  ;;
+              console)
+                  # Screen-debug boots must keep tty0 last so initramfs-tools and
+                  # systemd status messages are visible on the phone panel instead of
+                  # disappearing into the UART console.
+                  CMDLINE="$CMDLINE_COMMON vt.global_cursor_default=1 razer_fb_clear=0 console=tty0"
+                  ;;
+          esac
+
+          if [ -n "${RAZER_EXTRA_CMDLINE:-}" ]; then
+              CMDLINE="$CMDLINE $RAZER_EXTRA_CMDLINE"
+          fi
+
+          "${MKBOOTIMG_CMD[@]}" \
+              --kernel "$OUTPUT_DIR/Image.gz-dtb" \
+              --ramdisk "$RAMDISK" \
+              --base 0x00000000 \
+              --kernel_offset 0x00008000 \
+              --ramdisk_offset 0x02000000 \
+              --tags_offset 0x00000100 \
+              --pagesize 4096 \
+              --header_version 1 \
+              --cmdline "$CMDLINE" \
+              --os_version 14.0.0 \
+              --os_patch_level 2024-01 \
+              -o "$BOOT_IMG"
+
+          echo "  Created boot.img ($(du -h "$BOOT_IMG" | cut -f1))"
+
+          # -------------------------------------------------------
+          # Step 4: Create disabled-verification vbmeta
+          # -------------------------------------------------------
+          echo "[4/4] Creating vbmeta with verification disabled..."
+
+          # Create a minimal vbmeta that disables AVB verification
+          # This allows booting unsigned images
+          python3 -c "
+          import struct
+
+          # AVB vbmeta header layout (see external/avb/libavb/avb_vbmeta_image.h):
+          #   Offset 0:    magic 'AVB0' (4 bytes)
+          #   Offset 4:    required_libavb_version_major (4 bytes, big-endian)
+          #   Offset 8:    required_libavb_version_minor (4 bytes, big-endian)
+          #   Offset 12:   authentication_data_block_size (8 bytes)
+          #   Offset 20:   auxiliary_data_block_size (8 bytes)
+          #   Offset 28:   algorithm_type (4 bytes) = 0 (none)
+          #   Offset 32-119: hash/signature offsets (zeroed = no auth)
+          #   Offset 120:  flags (4 bytes, big-endian)
+          #      bit 0 = AVB_VBMETA_IMAGE_FLAGS_HASHTREE_DISABLED
+          #      bit 1 = AVB_VBMETA_IMAGE_FLAGS_VERIFICATION_DISABLED
+
+          data = bytearray(4096)
+          # Magic
+          data[0:4] = b'AVB0'
+          # Major version = 1
+          struct.pack_into('>I', data, 4, 1)
+          # Minor version = 1
+          struct.pack_into('>I', data, 8, 1)
+          # Flags = 3 (disable both hashtree and verification)
+          struct.pack_into('>I', data, 120, 3)
+
+          with open('$OUTPUT_DIR/vbmeta_disabled.img', 'wb') as f:
+              f.write(bytes(data))
+          print('  Created vbmeta_disabled.img')
+          " 2>/dev/null || {
+              # Fallback: create empty vbmeta with avbtool if available
+              echo "  WARNING: Could not create vbmeta. Create manually or use stock vbmeta with --disable-verity."
+          }
+
+          mkdir -p "$WIN_OUTPUT_DIR"
+          cp -f "$BOOT_IMG" "$WIN_OUTPUT_DIR/boot.img"
+          cp -f "$RAMDISK" "$WIN_OUTPUT_DIR/$(basename "$RAMDISK")"
+          cp -f "$INITRD_VERSIONED" "$WIN_OUTPUT_DIR/$(basename "$INITRD_VERSIONED")"
+          cp -f "$KERNEL_RELEASE_FILE" "$WIN_OUTPUT_DIR/kernel.release"
+          cp -f "$ROOTFS_RELEASE_FILE" "$WIN_OUTPUT_DIR/rootfs.kernel-release"
+          if [ -f "$ROOTFS_USERSPACE_FILE" ]; then
+              cp -f "$ROOTFS_USERSPACE_FILE" "$WIN_OUTPUT_DIR/userspace.profile"
+          fi
+          if [ -f "$OUTPUT_DIR/vbmeta_disabled.img" ]; then
+              cp -f "$OUTPUT_DIR/vbmeta_disabled.img" "$WIN_OUTPUT_DIR/vbmeta_disabled.img"
+          fi
+
+          echo ""
+          echo "========================================"
+          echo " Boot image creation complete!"
+          echo "========================================"
+          echo ""
+          echo "Output files:"
+          echo "  $BOOT_IMG"
+          echo "  $OUTPUT_DIR/rootfs-sparse.img"
+          echo "  $OUTPUT_DIR/vbmeta_disabled.img (one-time AVB setup helper; do not reflash if already installed)"
+          echo ""
+          echo "========================================"
+          echo " FLASHING INSTRUCTIONS"
+          echo "========================================"
+          echo ""
+          echo "1. Enable Developer Options on Razer Phone 2"
+          echo "   Settings > About Phone > Tap Build Number 7 times"
+          echo ""
+          echo "2. Enable OEM Unlocking"
+          echo "   Settings > Developer Options > Enable OEM unlocking"
+          echo ""
+          echo "3. Reboot to bootloader"
+          echo "   adb reboot bootloader"
+          echo ""
+          echo "4. Unlock bootloader (WARNING: This will wipe all data!)"
+          echo "   fastboot oem unlock"
+          echo ""
+          echo "5. Flash boot image to both slots and flash rootfs"
+          echo '   fastboot flash boot_a output\boot.img && fastboot flash boot_b output\boot.img && fastboot flash userdata output\rootfs-sparse.img && fastboot reboot'
+          echo ""
+          echo "6. Disable verified boot only once, if this device has not already had disabled vbmeta flashed."
+          echo "   This is intentionally not part of the routine flash command."
+          echo ""
+          echo "7. First boot will be slow (resizing filesystem)."
+          echo "   Normal boot uses Ubuntu initramfs-tools. Use WiFi SSH after NetworkManager comes up."
+          echo ""
+          echo "Default credentials:  klipper / klipper"
+          echo "Change immediately after first boot!"
 
       - name: Write checksums
         shell: bash
