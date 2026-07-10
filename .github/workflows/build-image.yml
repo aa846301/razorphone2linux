@@ -41,6 +41,7 @@ jobs:
       RAZER_DISPLAY_NATIVE_PANEL: "1"
       RAZER_BOOT_DISPLAY_MODE: normal
       RAZER_SKIP_REFERENCE: "1"
+      RAZER_BUILD_CACHE_VERSION: "1"
       RAZER_FACTORY_ZIP_URL: ${{ secrets.RAZER_FACTORY_ZIP_URL || vars.RAZER_FACTORY_ZIP_URL }}
       RAZER_FACTORY_ZIP_AUTH_HEADER: ${{ secrets.RAZER_FACTORY_ZIP_AUTH_HEADER }}
       RAZER_WORKDIR: /home/runner/razorphone2linux
@@ -100,17 +101,43 @@ jobs:
               printf 'userspace_profile=%s\n' "${RAZER_USERSPACE_PROFILE}"
               printf 'display_native_panel=%s\n' "${RAZER_DISPLAY_NATIVE_PANEL}"
               printf 'boot_display_mode=%s\n' "${RAZER_BOOT_DISPLAY_MODE}"
+              printf 'build_cache_version=%s\n' "${RAZER_BUILD_CACHE_VERSION}"
               printf 'factory_url_hash=%s\n' "${firmware_url_hash}"
+              # Keep CI plumbing edits from invalidating the full Linux image cache.
+              # If build semantics change, bump RAZER_BUILD_CACHE_VERSION above.
               git ls-files -s -- \
-                .github/workflows/build-image.yml \
-                config \
-                dts \
-                kernel-patches \
-                kernel-source/linux \
-                panel-driver \
-                rootfs-scripts \
-                scripts \
-                tools
+                config/build.env \
+                config/device.env \
+                config/kernel-source.env \
+                config/razer-aura.config \
+                config/userspace.env \
+                dts/sdm845-razer-aura.dts \
+                ':(glob)kernel-patches/*.patch' \
+                kernel-source/linux/.razer-executable-files \
+                kernel-source/linux/.razer-kernel-commit \
+                panel-driver/panel-novatek-nt36830.c \
+                rootfs-binaries/arm64/pd-mapper \
+                rootfs-binaries/arm64/rmtfs-razer-test \
+                rootfs-binaries/arm64/tqftpserv \
+                rootfs-packages/arm64/tqftpserv_1.0-5_arm64.deb \
+                rootfs-scripts/initramfs-tools/razer-gpu-firmware \
+                rootfs-scripts/initramfs-tools/razer-root-local-top \
+                rootfs-scripts/initramfs-tools/razer-root.conf \
+                rootfs-scripts/kiosk-prototype/README.md \
+                rootfs-scripts/kiosk-prototype/hakiosk.sh \
+                rootfs-scripts/kiosk-prototype/sway-kiosk.conf \
+                rootfs-scripts/kiosk-prototype/touchviz.html \
+                rootfs-scripts/razer-charge-limits.service \
+                rootfs-scripts/razer-charge-limits.sh \
+                rootfs-scripts/razer-panel-autocolortest.service \
+                rootfs-scripts/razer-panel-colortest.py \
+                rootfs-scripts/razer-panel-colortest.service \
+                rootfs-scripts/razer-panel-idle-blank.service \
+                rootfs-scripts/razer-panel-idle-blank.sh \
+                rootfs-scripts/razer-quiet-console.service \
+                rootfs-scripts/razer-wifi-ready.sh \
+                rootfs-scripts/usb-gadget-setup.sh \
+                tools/mkbootimg.py
             } | sha256sum | cut -d' ' -f1
           )"
           output_cache_key="build-output-${RUNNER_OS}-${RUNNER_ARCH}-${RAZER_IMAGE_PROFILE}-${RAZER_USERSPACE_PROFILE}-${input_hash}"
