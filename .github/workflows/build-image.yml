@@ -859,13 +859,16 @@ jobs:
           if [ -d "$PATCH_DIR" ]; then
               while IFS= read -r patch_file; do
                   patch_name="$(basename "$patch_file")"
-                  if git -C "$KERNEL_DIR" apply --recount --reverse --check "$patch_file" >/dev/null 2>&1; then
+                  normalized_patch="$(mktemp)"
+                  sed 's/\r$//' "$patch_file" > "$normalized_patch"
+                  if git -C "$KERNEL_DIR" apply --recount --reverse --check "$normalized_patch" >/dev/null 2>&1; then
                       echo "  $patch_name already applied."
                   else
-                      git -C "$KERNEL_DIR" apply --recount --check "$patch_file"
-                      git -C "$KERNEL_DIR" apply --recount "$patch_file"
+                      git -C "$KERNEL_DIR" apply --recount --check "$normalized_patch"
+                      git -C "$KERNEL_DIR" apply --recount "$normalized_patch"
                       echo "  Applied $patch_name"
                   fi
+                  rm -f "$normalized_patch"
               done < <(find "$PATCH_DIR" -maxdepth 1 -type f -name '*.patch' | sort)
           else
               echo "  No kernel-patches directory."
