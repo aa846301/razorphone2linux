@@ -1,13 +1,15 @@
 [Unit]
-Description=Apply Razer Phone 2 battery charge thresholds
+Description=Keep Razer Phone 2 battery charge between 40 and 80 percent
 After=multi-user.target
 
 [Service]
-Type=oneshot
+Type=simple
 Environment=RAZER_CHARGE_START_PERCENT=40
 Environment=RAZER_CHARGE_STOP_PERCENT=80
+Environment=RAZER_CHARGE_POLL_SECONDS=30
 ExecStart=/usr/local/sbin/razer-charge-limits
-RemainAfterExit=yes
+Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target

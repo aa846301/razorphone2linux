@@ -43,6 +43,8 @@ ROOTFS_PACKAGES_DIR="${ROOTFS_PACKAGES_DIR:-$PROJECT_DIR/rootfs-packages/arm64}"
 ROOTFS_BINARIES_DIR="${ROOTFS_BINARIES_DIR:-$PROJECT_DIR/rootfs-binaries/arm64}"
 KERNEL_RELEASE_FILE="$OUTPUT_DIR/kernel.release"
 ROOTFS_RELEASE_FILE="$OUTPUT_DIR/rootfs.kernel-release"
+KERNEL_MODULES_FINGERPRINT_FILE="$OUTPUT_DIR/kernel.modules-fingerprint"
+ROOTFS_MODULES_FINGERPRINT_FILE="$OUTPUT_DIR/rootfs.modules-fingerprint"
 
 mkdir -p "$OUTPUT_DIR" "$WIN_OUTPUT_DIR"
 
@@ -255,6 +257,13 @@ if [ -f "$KERNEL_RELEASE_FILE" ]; then
         cp -f "$INITRD_SRC" "$OUTPUT_DIR/initrd.img-$KERNEL_VERSION"
         cp -f "$INITRD_SRC" "$OUTPUT_DIR/initrd.img"
         echo "$KERNEL_VERSION" > "$ROOTFS_RELEASE_FILE"
+        if [ ! -s "$KERNEL_MODULES_FINGERPRINT_FILE" ]; then
+            echo "ERROR: kernel module fingerprint is missing: $KERNEL_MODULES_FINGERPRINT_FILE"
+            exit 1
+        fi
+        install -D -m 0644 "$KERNEL_MODULES_FINGERPRINT_FILE" \
+            "$MOUNT_DIR/etc/razerphone2linux/kernel.modules-fingerprint"
+        cp -f "$KERNEL_MODULES_FINGERPRINT_FILE" "$ROOTFS_MODULES_FINGERPRINT_FILE"
         echo "  Installed modules for $KERNEL_VERSION"
         echo "  Generated initramfs-tools initrd for $KERNEL_VERSION"
     else
@@ -296,6 +305,9 @@ cp -f "$ROOTFS_IMG" "$WIN_ROOTFS_IMG"
 cp -f "$SPARSE_IMG" "$WIN_OUTPUT_DIR/rootfs-sparse.img"
 if [ -f "$ROOTFS_RELEASE_FILE" ]; then
     cp -f "$ROOTFS_RELEASE_FILE" "$WIN_OUTPUT_DIR/rootfs.kernel-release"
+fi
+if [ -f "$ROOTFS_MODULES_FINGERPRINT_FILE" ]; then
+    cp -f "$ROOTFS_MODULES_FINGERPRINT_FILE" "$WIN_OUTPUT_DIR/rootfs.modules-fingerprint"
 fi
 cp -f "$OUTPUT_DIR/userspace.profile" "$WIN_OUTPUT_DIR/userspace.profile"
 if [ -n "${KERNEL_VERSION:-}" ] && [ -f "$OUTPUT_DIR/initrd.img-$KERNEL_VERSION" ]; then

@@ -320,12 +320,9 @@ if [ "${RAZER_EARLY_DEBUG_LOG:-0}" = "1" ]; then
     ./scripts/config --enable MAGIC_SYSRQ
 fi
 
-# June parity (2026-07-03): the known-good June image runs this entire chain
-# BUILT IN (its module tree has zero q6v5/ipa/ath10k/qrtr/glink .ko files).
-# The previous "postmarketOS alignment" block here forced everything to =m,
-# which is the only binary-level difference to the fresh builds that hard-
-# reset ~30s after boot. Keep the chain =y; do not reintroduce --module here
-# without retesting on the device.
+# Keep the Wi-Fi/MSS chain modular so the compressed kernel stays within ABL's
+# size limit. Boot packaging verifies the exact module-tree fingerprint, so a
+# rebuilt boot kernel cannot be paired with stale same-release rootfs modules.
 ./scripts/config --module CFG80211
 ./scripts/config --module MAC80211
 ./scripts/config --module ATH10K
@@ -400,8 +397,8 @@ KERNEL_RELEASE=$(make -s kernelrelease)
 echo "$KERNEL_RELEASE" > "$OUTPUT_DIR/kernel.release"
 cp -f "$KERNEL_DIR/.config" "$OUTPUT_DIR/config-$KERNEL_RELEASE"
 cp -f "$KERNEL_DIR/.config" "$OUTPUT_DIR/kernel.config"
-# The Wi-Fi/MSS chain is built in for June parity (see the config block
-# above), so verify presence via modules.builtin instead of .ko files.
+# Accept either built-in or modular Wi-Fi/MSS drivers, then fingerprint the
+# exact module tree so boot packaging can reject a stale same-release rootfs.
 MODULES_BUILTIN="$OUTPUT_DIR/modules_install/lib/modules/$KERNEL_RELEASE/modules.builtin"
 for builtin_path in \
     "kernel/drivers/net/wireless/ath/ath10k/ath10k_core.ko" \
@@ -417,6 +414,14 @@ for builtin_path in \
         exit 1
     fi
 done
+
+MODULE_TREE="$OUTPUT_DIR/modules_install/lib/modules/$KERNEL_RELEASE"
+(
+    cd "$MODULE_TREE"
+    find . -type f -name '*.ko' -print0 |
+        LC_ALL=C sort -z |
+        xargs -0 -r sha256sum
+) | sha256sum | cut -d' ' -f1 > "$OUTPUT_DIR/kernel.modules-fingerprint"
 
 # Copy kernel image
 cp -v arch/arm64/boot/Image.gz "$OUTPUT_DIR/Image.gz"
@@ -444,6 +449,7 @@ copy_aux_output "$OUTPUT_DIR/Image.gz" "$WIN_OUTPUT_DIR/Image.gz"
 copy_aux_output "$OUTPUT_DIR/sdm845-razer-aura.dtb" "$WIN_OUTPUT_DIR/sdm845-razer-aura.dtb"
 copy_aux_output "$OUTPUT_DIR/Image.gz-dtb" "$WIN_OUTPUT_DIR/Image.gz-dtb"
 copy_aux_output "$OUTPUT_DIR/kernel.release" "$WIN_OUTPUT_DIR/kernel.release"
+copy_aux_output "$OUTPUT_DIR/kernel.modules-fingerprint" "$WIN_OUTPUT_DIR/kernel.modules-fingerprint"
 copy_aux_output "$OUTPUT_DIR/config-$KERNEL_RELEASE" "$WIN_OUTPUT_DIR/config-$KERNEL_RELEASE"
 copy_aux_output "$OUTPUT_DIR/kernel.config" "$WIN_OUTPUT_DIR/kernel.config"
 echo "mainline" > "$OUTPUT_DIR/kernel.flavor"

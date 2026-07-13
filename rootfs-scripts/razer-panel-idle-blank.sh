@@ -8,7 +8,7 @@ if [ -w /sys/class/graphics/fb0/blank ]; then
     echo 1 > /sys/class/graphics/fb0/blank || true
 fi
 
-for dpms in /sys/class/drm/*/dpms; do
-    [ -w "$dpms" ] || continue
-    echo Off > "$dpms" || true
+for backlight in /sys/class/backlight/*; do
+    [ -w "$backlight/brightness" ] || continue
+    echo 0 > "$backlight/brightness" || true
 done

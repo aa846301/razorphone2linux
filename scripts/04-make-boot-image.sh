@@ -36,6 +36,8 @@ PROJECT_MKBOOTIMG="$PROJECT_DIR/tools/mkbootimg.py"
 LOCAL_MKBOOTIMG="$WORKDIR/mkbootimg-tool/mkbootimg.py"
 KERNEL_RELEASE_FILE="$OUTPUT_DIR/kernel.release"
 ROOTFS_RELEASE_FILE="$OUTPUT_DIR/rootfs.kernel-release"
+KERNEL_MODULES_FINGERPRINT_FILE="$OUTPUT_DIR/kernel.modules-fingerprint"
+ROOTFS_MODULES_FINGERPRINT_FILE="$OUTPUT_DIR/rootfs.modules-fingerprint"
 ROOTFS_USERSPACE_FILE="$OUTPUT_DIR/userspace.profile"
 KERNEL_FLAVOR_FILE="$OUTPUT_DIR/kernel.flavor"
 DISPLAY_MODE="${RAZER_BOOT_DISPLAY_MODE:-normal}"
@@ -68,6 +70,25 @@ elif command -v mkbootimg &>/dev/null; then
 else
     echo "ERROR: mkbootimg tool not found. Expected $PROJECT_MKBOOTIMG, $LOCAL_MKBOOTIMG, or mkbootimg in PATH."
     exit 1
+fi
+
+if [ ! -s "$KERNEL_MODULES_FINGERPRINT_FILE" ] ||
+        [ ! -s "$ROOTFS_MODULES_FINGERPRINT_FILE" ]; then
+    echo "ERROR: kernel or rootfs module fingerprint is missing."
+    echo "Run the kernel and rootfs build phases before packaging boot.img."
+    exit 1
+fi
+
+KERNEL_MODULES_FINGERPRINT=$(tr -d '\r\n' < "$KERNEL_MODULES_FINGERPRINT_FILE")
+ROOTFS_MODULES_FINGERPRINT=$(tr -d '\r\n' < "$ROOTFS_MODULES_FINGERPRINT_FILE")
+if [ "$KERNEL_MODULES_FINGERPRINT" != "$ROOTFS_MODULES_FINGERPRINT" ]; then
+    if [ "${RAZER_ALLOW_KERNEL_MISMATCH:-0}" = "1" ]; then
+        echo "WARNING: boot and rootfs module fingerprints differ (override active)."
+    else
+        echo "ERROR: boot kernel and rootfs use different module binaries."
+        echo "Refresh rootfs after rebuilding the kernel, even when kernel.release is unchanged."
+        exit 1
+    fi
 fi
 
 # -------------------------------------------------------
@@ -283,6 +304,8 @@ cp -f "$RAMDISK" "$WIN_OUTPUT_DIR/$(basename "$RAMDISK")"
 cp -f "$INITRD_VERSIONED" "$WIN_OUTPUT_DIR/$(basename "$INITRD_VERSIONED")"
 cp -f "$KERNEL_RELEASE_FILE" "$WIN_OUTPUT_DIR/kernel.release"
 cp -f "$ROOTFS_RELEASE_FILE" "$WIN_OUTPUT_DIR/rootfs.kernel-release"
+cp -f "$KERNEL_MODULES_FINGERPRINT_FILE" "$WIN_OUTPUT_DIR/kernel.modules-fingerprint"
+cp -f "$ROOTFS_MODULES_FINGERPRINT_FILE" "$WIN_OUTPUT_DIR/rootfs.modules-fingerprint"
 if [ -f "$ROOTFS_USERSPACE_FILE" ]; then
     cp -f "$ROOTFS_USERSPACE_FILE" "$WIN_OUTPUT_DIR/userspace.profile"
 fi

@@ -1,5 +1,5 @@
 [Unit]
-Description=Blank the panel on the app-free base image
+Description=Blank the panel and turn off its backlight
 After=multi-user.target
 ConditionKernelCommandLine=razer_panel_idle_blank
 

@@ -3,33 +3,61 @@ set -euo pipefail
 
 START="${RAZER_CHARGE_START_PERCENT:-40}"
 STOP="${RAZER_CHARGE_STOP_PERCENT:-80}"
+POLL_SECONDS="${RAZER_CHARGE_POLL_SECONDS:-30}"
+POWER_SUPPLY_ROOT="${RAZER_POWER_SUPPLY_ROOT:-/sys/class/power_supply}"
+RUN_ONCE="${RAZER_CHARGE_ONCE:-0}"
 
 log() {
     printf 'razer-charge-limits: %s\n' "$*" >&2
 }
 
-write_if_present() {
-    local path="$1"
-    local value="$2"
+find_supply() {
+    local wanted_type="$1"
+    local psy
 
-    if [ -w "$path" ]; then
-        printf '%s\n' "$value" > "$path"
-        log "set $path=$value"
-        return 0
-    fi
+    for psy in "$POWER_SUPPLY_ROOT"/*; do
+        [ -r "$psy/type" ] || continue
+        if [ "$(cat "$psy/type")" = "$wanted_type" ]; then
+            printf '%s\n' "$psy"
+            return 0
+        fi
+    done
     return 1
 }
 
-applied=0
-for psy in /sys/class/power_supply/*; do
-    [ -d "$psy" ] || continue
-
-    write_if_present "$psy/charge_control_start_threshold" "$START" && applied=1
-    write_if_present "$psy/charge_control_end_threshold" "$STOP" && applied=1
-    write_if_present "$psy/charge_stop_threshold" "$STOP" && applied=1
-    write_if_present "$psy/input_suspend_threshold" "$STOP" && applied=1
-done
-
-if [ "$applied" -eq 0 ]; then
-    log "no writable threshold sysfs found; kernel charging still uses DTS safety limits"
+if ! [[ "$START" =~ ^[0-9]+$ && "$STOP" =~ ^[0-9]+$ ]] ||
+        [ "$START" -ge "$STOP" ] || [ "$STOP" -gt 100 ]; then
+    log "invalid thresholds: start=$START stop=$STOP"
+    exit 1
 fi
+
+log "policy active: resume at <=${START}%, suspend at >=${STOP}%"
+
+while true; do
+    battery="$(find_supply Battery || true)"
+    charger="$(find_supply USB || true)"
+
+    if [ -n "$battery" ] && [ -r "$battery/capacity" ] &&
+            [ -n "$charger" ] && [ -w "$charger/status" ]; then
+        capacity="$(cat "$battery/capacity")"
+        status="$(cat "$charger/status")"
+
+        if [[ "$capacity" =~ ^[0-9]+$ ]]; then
+            if [ "$capacity" -ge "$STOP" ] && [ "$status" != "Discharging" ]; then
+                # qcom_smbx maps POWER_SUPPLY_STATUS_UNKNOWN to USB input suspend.
+                printf 'Unknown\n' > "$charger/status"
+                log "capacity=${capacity}%: charging suspended"
+            elif [ "$capacity" -le "$START" ] && [ "$status" != "Charging" ]; then
+                printf 'Charging\n' > "$charger/status"
+                log "capacity=${capacity}%: charging resumed"
+            fi
+        else
+            log "ignoring invalid capacity '$capacity'"
+        fi
+    elif [ "$RUN_ONCE" = "1" ]; then
+        log "charger or battery power supply is unavailable"
+    fi
+
+    [ "$RUN_ONCE" = "1" ] && break
+    sleep "$POLL_SECONDS"
+done

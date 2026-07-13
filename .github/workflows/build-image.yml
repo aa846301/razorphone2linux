@@ -177,6 +177,8 @@ jobs:
             Image.gz-dtb
             kernel.config
             kernel.release
+            kernel.modules-fingerprint
+            rootfs.modules-fingerprint
             userspace.profile
             initrd.img
             vbmeta_disabled.img
@@ -954,12 +956,9 @@ jobs:
               ./scripts/config --enable MAGIC_SYSRQ
           fi
 
-          # June parity (2026-07-03): the known-good June image runs this entire chain
-          # BUILT IN (its module tree has zero q6v5/ipa/ath10k/qrtr/glink .ko files).
-          # The previous "postmarketOS alignment" block here forced everything to =m,
-          # which is the only binary-level difference to the fresh builds that hard-
-          # reset ~30s after boot. Keep the chain =y; do not reintroduce --module here
-          # without retesting on the device.
+          # Keep the Wi-Fi/MSS chain modular so the compressed kernel stays within
+          # ABL's size limit. Boot packaging verifies the exact module-tree
+          # fingerprint and rejects stale same-release rootfs modules.
           ./scripts/config --module CFG80211
           ./scripts/config --module MAC80211
           ./scripts/config --module ATH10K
@@ -1034,8 +1033,8 @@ jobs:
           echo "$KERNEL_RELEASE" > "$OUTPUT_DIR/kernel.release"
           cp -f "$KERNEL_DIR/.config" "$OUTPUT_DIR/config-$KERNEL_RELEASE"
           cp -f "$KERNEL_DIR/.config" "$OUTPUT_DIR/kernel.config"
-          # The Wi-Fi/MSS chain is built in for June parity (see the config block
-          # above), so verify presence via modules.builtin instead of .ko files.
+          # Accept either built-in or modular Wi-Fi/MSS drivers, then fingerprint
+          # the exact module tree to reject stale same-release rootfs images.
           MODULES_BUILTIN="$OUTPUT_DIR/modules_install/lib/modules/$KERNEL_RELEASE/modules.builtin"
           for builtin_path in \
               "kernel/drivers/net/wireless/ath/ath10k/ath10k_core.ko" \
@@ -1051,6 +1050,14 @@ jobs:
                   exit 1
               fi
           done
+
+          MODULE_TREE="$OUTPUT_DIR/modules_install/lib/modules/$KERNEL_RELEASE"
+          (
+              cd "$MODULE_TREE"
+              find . -type f -name '*.ko' -print0 |
+                  LC_ALL=C sort -z |
+                  xargs -0 -r sha256sum
+          ) | sha256sum | cut -d' ' -f1 > "$OUTPUT_DIR/kernel.modules-fingerprint"
 
           # Copy kernel image
           cp -v arch/arm64/boot/Image.gz "$OUTPUT_DIR/Image.gz"
@@ -1078,6 +1085,7 @@ jobs:
           copy_aux_output "$OUTPUT_DIR/sdm845-razer-aura.dtb" "$WIN_OUTPUT_DIR/sdm845-razer-aura.dtb"
           copy_aux_output "$OUTPUT_DIR/Image.gz-dtb" "$WIN_OUTPUT_DIR/Image.gz-dtb"
           copy_aux_output "$OUTPUT_DIR/kernel.release" "$WIN_OUTPUT_DIR/kernel.release"
+          copy_aux_output "$OUTPUT_DIR/kernel.modules-fingerprint" "$WIN_OUTPUT_DIR/kernel.modules-fingerprint"
           copy_aux_output "$OUTPUT_DIR/config-$KERNEL_RELEASE" "$WIN_OUTPUT_DIR/config-$KERNEL_RELEASE"
           copy_aux_output "$OUTPUT_DIR/kernel.config" "$WIN_OUTPUT_DIR/kernel.config"
           echo "mainline" > "$OUTPUT_DIR/kernel.flavor"
@@ -1189,6 +1197,8 @@ jobs:
           # Kernel version. Prefer the release written by 02-build-kernel.sh so rootfs
           # and boot packaging never silently consume different module directories.
           KERNEL_RELEASE_FILE="$OUTPUT_DIR/kernel.release"
+          KERNEL_MODULES_FINGERPRINT_FILE="$OUTPUT_DIR/kernel.modules-fingerprint"
+          ROOTFS_MODULES_FINGERPRINT_FILE="$OUTPUT_DIR/rootfs.modules-fingerprint"
           if [ -f "$KERNEL_RELEASE_FILE" ]; then
               KERNEL_VERSION=$(tr -d '\r\n' < "$KERNEL_RELEASE_FILE")
           else
@@ -1634,6 +1644,13 @@ jobs:
           # Run depmod inside chroot
           chroot "$CHROOT_DIR" depmod -a "$KERNEL_VERSION"
           echo "$KERNEL_VERSION" > "$OUTPUT_DIR/rootfs.kernel-release"
+          if [ ! -s "$KERNEL_MODULES_FINGERPRINT_FILE" ]; then
+              echo "ERROR: kernel module fingerprint is missing: $KERNEL_MODULES_FINGERPRINT_FILE"
+              exit 1
+          fi
+          install -D -m 0644 "$KERNEL_MODULES_FINGERPRINT_FILE" \
+              "$CHROOT_DIR/etc/razerphone2linux/kernel.modules-fingerprint"
+          cp -f "$KERNEL_MODULES_FINGERPRINT_FILE" "$ROOTFS_MODULES_FINGERPRINT_FILE"
 
           echo "  Kernel modules installed."
 
@@ -2467,6 +2484,7 @@ jobs:
           cp -f "$OUTPUT_ROOTFS_IMG" "$WIN_OUTPUT_DIR/rootfs.img"
           cp -f "$SPARSE_IMG" "$WIN_OUTPUT_DIR/rootfs-sparse.img"
           cp -f "$OUTPUT_DIR/rootfs.kernel-release" "$WIN_OUTPUT_DIR/rootfs.kernel-release"
+          cp -f "$ROOTFS_MODULES_FINGERPRINT_FILE" "$WIN_OUTPUT_DIR/rootfs.modules-fingerprint"
           cp -f "$OUTPUT_DIR/userspace.profile" "$WIN_OUTPUT_DIR/userspace.profile"
           cp -f "$OUTPUT_DIR/initrd.img-$KERNEL_VERSION" "$WIN_OUTPUT_DIR/initrd.img-$KERNEL_VERSION"
           cp -f "$OUTPUT_DIR/initrd.img" "$WIN_OUTPUT_DIR/initrd.img"
@@ -2539,6 +2557,8 @@ jobs:
           LOCAL_MKBOOTIMG="$WORKDIR/mkbootimg-tool/mkbootimg.py"
           KERNEL_RELEASE_FILE="$OUTPUT_DIR/kernel.release"
           ROOTFS_RELEASE_FILE="$OUTPUT_DIR/rootfs.kernel-release"
+          KERNEL_MODULES_FINGERPRINT_FILE="$OUTPUT_DIR/kernel.modules-fingerprint"
+          ROOTFS_MODULES_FINGERPRINT_FILE="$OUTPUT_DIR/rootfs.modules-fingerprint"
           ROOTFS_USERSPACE_FILE="$OUTPUT_DIR/userspace.profile"
           KERNEL_FLAVOR_FILE="$OUTPUT_DIR/kernel.flavor"
           DISPLAY_MODE="${RAZER_BOOT_DISPLAY_MODE:-normal}"
@@ -2571,6 +2591,25 @@ jobs:
           else
               echo "ERROR: mkbootimg tool not found. Expected $PROJECT_MKBOOTIMG, $LOCAL_MKBOOTIMG, or mkbootimg in PATH."
               exit 1
+          fi
+
+          if [ ! -s "$KERNEL_MODULES_FINGERPRINT_FILE" ] ||
+                  [ ! -s "$ROOTFS_MODULES_FINGERPRINT_FILE" ]; then
+              echo "ERROR: kernel or rootfs module fingerprint is missing."
+              echo "Run the kernel and rootfs build phases before packaging boot.img."
+              exit 1
+          fi
+
+          KERNEL_MODULES_FINGERPRINT=$(tr -d '\r\n' < "$KERNEL_MODULES_FINGERPRINT_FILE")
+          ROOTFS_MODULES_FINGERPRINT=$(tr -d '\r\n' < "$ROOTFS_MODULES_FINGERPRINT_FILE")
+          if [ "$KERNEL_MODULES_FINGERPRINT" != "$ROOTFS_MODULES_FINGERPRINT" ]; then
+              if [ "${RAZER_ALLOW_KERNEL_MISMATCH:-0}" = "1" ]; then
+                  echo "WARNING: boot and rootfs module fingerprints differ (override active)."
+              else
+                  echo "ERROR: boot kernel and rootfs use different module binaries."
+                  echo "Refresh rootfs after rebuilding the kernel, even when kernel.release is unchanged."
+                  exit 1
+              fi
           fi
 
           # -------------------------------------------------------
@@ -2786,6 +2825,8 @@ jobs:
           cp -f "$INITRD_VERSIONED" "$WIN_OUTPUT_DIR/$(basename "$INITRD_VERSIONED")"
           cp -f "$KERNEL_RELEASE_FILE" "$WIN_OUTPUT_DIR/kernel.release"
           cp -f "$ROOTFS_RELEASE_FILE" "$WIN_OUTPUT_DIR/rootfs.kernel-release"
+          cp -f "$KERNEL_MODULES_FINGERPRINT_FILE" "$WIN_OUTPUT_DIR/kernel.modules-fingerprint"
+          cp -f "$ROOTFS_MODULES_FINGERPRINT_FILE" "$WIN_OUTPUT_DIR/rootfs.modules-fingerprint"
           if [ -f "$ROOTFS_USERSPACE_FILE" ]; then
               cp -f "$ROOTFS_USERSPACE_FILE" "$WIN_OUTPUT_DIR/userspace.profile"
           fi
