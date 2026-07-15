@@ -41,6 +41,8 @@ jobs:
       RAZER_DISPLAY_NATIVE_PANEL: "1"
       RAZER_BOOT_DISPLAY_MODE: normal
       RAZER_SKIP_REFERENCE: "1"
+      RAZER_FIRMWARE_CACHE_VERSION: "1"
+      RAZER_ROOTFS_CACHE_VERSION: "1"
       RAZER_FACTORY_ZIP_URL: ${{ secrets.RAZER_FACTORY_ZIP_URL || vars.RAZER_FACTORY_ZIP_URL }}
       RAZER_FACTORY_ZIP_AUTH_HEADER: ${{ secrets.RAZER_FACTORY_ZIP_AUTH_HEADER }}
       RAZER_WORKDIR: /home/runner/razorphone2linux
@@ -100,11 +102,34 @@ jobs:
           echo "zip_name=${zip_name}" >> "$GITHUB_OUTPUT"
           echo "Build version: ${version}"
 
+      - name: Compute extracted firmware cache key
+        id: firmware-cache-key
+        if: env.RAZER_FACTORY_ZIP_URL != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          url_hash="$(printf '%s' "${RAZER_FACTORY_ZIP_URL}" | sha256sum | cut -d' ' -f1)"
+          key="factory-firmware-${RUNNER_OS}-${RUNNER_ARCH}-v${RAZER_FIRMWARE_CACHE_VERSION}-${url_hash}"
+          echo "key=${key}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore extracted factory firmware cache
+        id: firmware-cache
+        if: env.RAZER_FACTORY_ZIP_URL != ''
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            firmware/qcom/sdm845/Razer/aura
+            firmware/ath10k/WCN3990/hw1.0
+            firmware/qca
+          key: ${{ steps.firmware-cache-key.outputs.key }}
+
       - name: Validate firmware source
         shell: bash
         run: |
           set -euo pipefail
-          if [ -n "${RAZER_FACTORY_ZIP_URL}" ]; then
+          if [ "${{ steps.firmware-cache.outputs.cache-hit }}" = "true" ]; then
+            echo "Using cached extracted factory firmware."
+          elif [ -n "${RAZER_FACTORY_ZIP_URL}" ]; then
             echo "Firmware will be downloaded from RAZER_FACTORY_ZIP_URL."
           elif [ -f firmware/qcom/sdm845/Razer/aura/mba.mbn ]; then
             echo "Firmware is already present in firmware/."
@@ -121,30 +146,14 @@ jobs:
           fi
 
       - name: Prepare factory firmware paths
+        if: env.RAZER_FACTORY_ZIP_URL != '' && steps.firmware-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$(dirname "${RAZER_FACTORY_ZIP}")" "$(dirname "${RAZER_MODEM_IMG}")"
 
-      - name: Compute factory firmware cache key
-        id: factory-cache-key
-        if: env.RAZER_FACTORY_ZIP_URL != ''
-        shell: bash
-        run: |
-          set -euo pipefail
-          url_hash="$(printf '%s' "${RAZER_FACTORY_ZIP_URL}" | sha256sum | cut -d' ' -f1)"
-          echo "key=factory-zip-${RUNNER_OS}-${RUNNER_ARCH}-${url_hash}" >> "$GITHUB_OUTPUT"
-
-      - name: Restore factory firmware package cache
-        id: factory-zip-cache
-        if: env.RAZER_FACTORY_ZIP_URL != ''
-        uses: actions/cache/restore@v6
-        with:
-          path: ${{ env.RAZER_FACTORY_ZIP }}
-          key: ${{ steps.factory-cache-key.outputs.key }}
-
       - name: Download factory firmware package
-        if: env.RAZER_FACTORY_ZIP_URL != '' && steps.factory-zip-cache.outputs.cache-hit != 'true'
+        if: env.RAZER_FACTORY_ZIP_URL != '' && steps.firmware-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -157,15 +166,8 @@ jobs:
             "${RAZER_FACTORY_ZIP_URL}"
           test -s "${RAZER_FACTORY_ZIP}"
 
-      - name: Save factory firmware package cache
-        if: env.RAZER_FACTORY_ZIP_URL != '' && steps.factory-zip-cache.outputs.cache-hit != 'true'
-        continue-on-error: true
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ env.RAZER_FACTORY_ZIP }}
-          key: ${{ steps.factory-cache-key.outputs.key }}
-
       - name: Install firmware extraction tools
+        if: env.RAZER_FACTORY_ZIP_URL != '' && steps.firmware-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -185,7 +187,7 @@ jobs:
           fi
 
       - name: Extract modem image from factory package
-        if: env.RAZER_FACTORY_ZIP_URL != ''
+        if: env.RAZER_FACTORY_ZIP_URL != '' && steps.firmware-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -224,6 +226,7 @@ jobs:
           test -s "${RAZER_MODEM_IMG}"
 
       - name: Extract modem firmware blobs
+        if: env.RAZER_FACTORY_ZIP_URL != '' && steps.firmware-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -293,6 +296,7 @@ jobs:
           test -f firmware/qcom/sdm845/Razer/aura/mba.mbn
 
       - name: Extract Bluetooth firmware blobs
+        if: env.RAZER_FACTORY_ZIP_URL != '' && steps.firmware-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -363,6 +367,41 @@ jobs:
           fi
           test -s firmware/qca/crbtfw21.tlv
           test -s firmware/qca/Razer/aura/crnv21.bin
+
+      - name: Validate extracted factory firmware
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=(
+            firmware/qcom/sdm845/Razer/aura/mba.mbn
+            firmware/qcom/sdm845/Razer/aura/modem.mbn
+            firmware/qca/crbtfw21.tlv
+            firmware/qca/Razer/aura/crnv21.bin
+          )
+          for file in "${required[@]}"; do
+            test -s "${file}" || {
+              echo "ERROR: required extracted firmware is missing: ${file}" >&2
+              exit 1
+            }
+          done
+          du -sh firmware/qcom/sdm845/Razer/aura firmware/ath10k/WCN3990/hw1.0 firmware/qca
+
+      - name: Save extracted factory firmware cache
+        if: env.RAZER_FACTORY_ZIP_URL != '' && steps.firmware-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            firmware/qcom/sdm845/Razer/aura
+            firmware/ath10k/WCN3990/hw1.0
+            firmware/qca
+          key: ${{ steps.firmware-cache-key.outputs.key }}
+
+      - name: Remove factory package after extraction
+        if: env.RAZER_FACTORY_ZIP_URL != '' && steps.firmware-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          rm -f "${RAZER_FACTORY_ZIP}" "${RAZER_MODEM_IMG}"
 
       - name: Free runner disk space
         shell: bash
@@ -1112,7 +1151,42 @@ jobs:
             exit 1
           fi
 
+      - name: Compute reusable rootfs cache key
+        id: rootfs-cache-key
+        shell: bash
+        run: |
+          set -euo pipefail
+          rootfs_input_hash="$(
+            {
+              printf 'cache_version=%s\n' "${RAZER_ROOTFS_CACHE_VERSION}"
+              printf 'image_profile=%s\n' "${RAZER_IMAGE_PROFILE}"
+              printf 'userspace_profile=%s\n' "${RAZER_USERSPACE_PROFILE}"
+              printf 'ubuntu_mirror=%s\n' "${RAZER_UBUNTU_MIRROR:-https://ports.ubuntu.com/ubuntu-ports}"
+              git ls-files -s -- \
+                config/build.env \
+                config/userspace.env \
+                scripts/03-build-rootfs.sh \
+                rootfs-packages/arm64 \
+                rootfs-scripts/install-final-target.sh \
+                rootfs-scripts/kiosk-prototype \
+                "rootfs-profiles/${RAZER_USERSPACE_PROFILE}"
+            } | sha256sum | cut -d' ' -f1
+          )"
+          key="rootfs-${RUNNER_OS}-${RUNNER_ARCH}-${RAZER_IMAGE_PROFILE}-${RAZER_USERSPACE_PROFILE}-${rootfs_input_hash}"
+          echo "key=${key}" >> "$GITHUB_OUTPUT"
+          echo "Reusable rootfs cache key: ${key}"
+
+      - name: Restore reusable rootfs image cache
+        id: rootfs-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ${{ env.RAZER_WORKDIR }}/output/${{ env.RAZER_IMAGE_PROFILE }}/rootfs.img
+            ${{ env.RAZER_WORKDIR }}/output/${{ env.RAZER_IMAGE_PROFILE }}/userspace.profile
+          key: ${{ steps.rootfs-cache-key.outputs.key }}
+
       - name: Build ARM64 rootfs
+        if: steps.rootfs-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -2509,6 +2583,33 @@ jobs:
           echo ""
           echo "Next: Run bash 04-make-boot-image.sh"
           ROOTFS_BUILD_EOF
+
+      - name: Refresh cached ARM64 rootfs
+        if: steps.rootfs-cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Reusing cached rootfs.img; refreshing current firmware, modules, services, and initramfs."
+          sudo env \
+            RAZER_WORKDIR="${RAZER_WORKDIR}" \
+            RAZER_IMAGE_PROFILE="${RAZER_IMAGE_PROFILE}" \
+            RAZER_USERSPACE_PROFILE="${RAZER_USERSPACE_PROFILE}" \
+            RAZER_ALLOW_MISSING_FIRMWARE="${RAZER_ALLOW_MISSING_FIRMWARE:-0}" \
+            RAZER_MSS_DIAG_MANUAL="${RAZER_MSS_DIAG_MANUAL:-0}" \
+            FIRMWARE_DIR="${GITHUB_WORKSPACE}/firmware" \
+            ROOTFS_PACKAGES_DIR="${GITHUB_WORKSPACE}/rootfs-packages/arm64" \
+            ROOTFS_BINARIES_DIR="${GITHUB_WORKSPACE}/rootfs-binaries/arm64" \
+            bash "${GITHUB_WORKSPACE}/scripts/03-refresh-rootfs.sh"
+
+      - name: Save reusable rootfs image cache
+        if: steps.rootfs-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ${{ env.RAZER_WORKDIR }}/output/${{ env.RAZER_IMAGE_PROFILE }}/rootfs.img
+            ${{ env.RAZER_WORKDIR }}/output/${{ env.RAZER_IMAGE_PROFILE }}/userspace.profile
+          key: ${{ steps.rootfs-cache-key.outputs.key }}
 
       - name: Package boot image
         shell: bash
