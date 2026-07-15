@@ -34,6 +34,22 @@ export CROSS_COMPILE=aarch64-linux-gnu-
 # commit that is intentionally not an upstream annotated release tag.
 export LOCALVERSION=""
 
+CCACHE_DIR="${RAZER_CCACHE_DIR:-$WORKDIR/cache/ccache}"
+if command -v ccache >/dev/null 2>&1; then
+    mkdir -p "$CCACHE_DIR"
+    export CCACHE_DIR
+    export CCACHE_BASEDIR="$KERNEL_DIR"
+    export CCACHE_NOHASHDIR=true
+    export CC="ccache ${CROSS_COMPILE}gcc"
+    export HOSTCC="ccache gcc"
+    ccache --max-size "${RAZER_CCACHE_MAX_SIZE:-2G}" >/dev/null
+fi
+
+CORE_KEY_FILE="$OUTPUT_DIR/kernel.core-key"
+EXPECTED_CORE_KEY="$(RAZER_IMAGE_PROFILE="$IMAGE_PROFILE" \
+    bash "$PROJECT_DIR/scripts/kernel-core-cache-key.sh")"
+REUSE_KERNEL_CORE=0
+
 # Default to 8 jobs (12-core host: leaves headroom for the desktop; the old
 # hard cap of 4 wasted most of the machine). Override with RAZER_MAX_JOBS.
 MAX_JOBS="${RAZER_MAX_JOBS:-8}"
@@ -367,36 +383,79 @@ make olddefconfig
 
 echo "[4/6] Kernel configured."
 
+KERNEL_RELEASE=$(make -s kernelrelease)
+MODULE_TREE="$OUTPUT_DIR/modules_install/lib/modules/$KERNEL_RELEASE"
+
+module_tree_fingerprint() {
+    (
+        cd "$MODULE_TREE"
+        find . -type f -name '*.ko' -print0 |
+            LC_ALL=C sort -z |
+            xargs -0 -r sha256sum
+    ) | sha256sum | cut -d' ' -f1
+}
+
+if [ "${RAZER_FORCE_KERNEL_REBUILD:-0}" != "1" ] && \
+   [ -s "$CORE_KEY_FILE" ] && \
+   [ "$(tr -d '\r\n' < "$CORE_KEY_FILE")" = "$EXPECTED_CORE_KEY" ] && \
+   [ -s "$OUTPUT_DIR/Image.gz" ] && \
+   [ -s "$OUTPUT_DIR/kernel.config" ] && \
+   [ -s "$OUTPUT_DIR/kernel.release" ] && \
+   [ "$(tr -d '\r\n' < "$OUTPUT_DIR/kernel.release")" = "$KERNEL_RELEASE" ] && \
+   [ -s "$OUTPUT_DIR/config-$KERNEL_RELEASE" ] && \
+   [ -s "$OUTPUT_DIR/kernel.modules-fingerprint" ] && \
+   [ -d "$MODULE_TREE" ] && \
+   cmp -s .config "$OUTPUT_DIR/kernel.config" && \
+   [ "$(module_tree_fingerprint)" = "$(tr -d '\r\n' < "$OUTPUT_DIR/kernel.modules-fingerprint")" ]; then
+    REUSE_KERNEL_CORE=1
+    echo "  Kernel core identity matched; reusing Image.gz and modules."
+else
+    echo "  Kernel core cache unavailable or incompatible; full build required."
+fi
+
 # -------------------------------------------------------
 # Step 5: Build kernel, DTBs, and modules
 # -------------------------------------------------------
-echo "[5/6] Building kernel (this will take a while)..."
-if ! make -j"$BUILD_JOBS" Image.gz dtbs modules 2>&1 | tee "$OUTPUT_DIR/build.log"; then
-    echo '' | tee -a "$OUTPUT_DIR/build.log"
-    echo 'Parallel build failed under WSL, retrying with -j1 for a stable artifact...' | tee -a "$OUTPUT_DIR/build.log"
-    make olddefconfig 2>&1 | tee -a "$OUTPUT_DIR/build.log"
-    make prepare modules_prepare 2>&1 | tee -a "$OUTPUT_DIR/build.log"
-    make -j1 Image.gz dtbs modules 2>&1 | tee -a "$OUTPUT_DIR/build.log"
+if [ "$REUSE_KERNEL_CORE" = "1" ]; then
+    echo "[5/6] Building DTBs only (kernel core cache hit)..."
+    make -j"$BUILD_JOBS" dtbs 2>&1 | tee "$OUTPUT_DIR/build.log"
+else
+    echo "[5/6] Building kernel, DTBs, and modules (this will take a while)..."
+    if ! make -j"$BUILD_JOBS" Image.gz dtbs modules 2>&1 | tee "$OUTPUT_DIR/build.log"; then
+        echo '' | tee -a "$OUTPUT_DIR/build.log"
+        echo 'Parallel build failed under WSL, retrying with -j1 for a stable artifact...' | tee -a "$OUTPUT_DIR/build.log"
+        make olddefconfig 2>&1 | tee -a "$OUTPUT_DIR/build.log"
+        make prepare modules_prepare 2>&1 | tee -a "$OUTPUT_DIR/build.log"
+        make -j1 Image.gz dtbs modules 2>&1 | tee -a "$OUTPUT_DIR/build.log"
+    fi
 fi
 
 echo "[5/6] Build complete."
+if command -v ccache >/dev/null 2>&1; then
+    ccache --show-stats
+fi
 
 # -------------------------------------------------------
 # Step 6: Install modules and collect outputs
 # -------------------------------------------------------
 echo "[6/6] Collecting build outputs..."
 
-# Install modules to output directory
-rm -rf "$OUTPUT_DIR/modules_install"
-# INSTALL_MOD_STRIP: the config carries DEBUG_INFO=y, and unstripped .ko
-# files balloon each module tree to ~330MB (the rootfs ships two kernels).
-# Stripped trees are ~1/4 the size; debug symbols stay in the build tree.
-make INSTALL_MOD_PATH="$OUTPUT_DIR/modules_install" INSTALL_MOD_STRIP=1 modules_install
+if [ "$REUSE_KERNEL_CORE" != "1" ]; then
+    rm -rf "$OUTPUT_DIR/modules_install"
+    # INSTALL_MOD_STRIP: the config carries DEBUG_INFO=y, and unstripped .ko
+    # files balloon each module tree to ~330MB (the rootfs ships two kernels).
+    # Stripped trees are ~1/4 the size; debug symbols stay in the build tree.
+    make INSTALL_MOD_PATH="$OUTPUT_DIR/modules_install" INSTALL_MOD_STRIP=1 modules_install
 
-KERNEL_RELEASE=$(make -s kernelrelease)
-echo "$KERNEL_RELEASE" > "$OUTPUT_DIR/kernel.release"
-cp -f "$KERNEL_DIR/.config" "$OUTPUT_DIR/config-$KERNEL_RELEASE"
-cp -f "$KERNEL_DIR/.config" "$OUTPUT_DIR/kernel.config"
+    echo "$KERNEL_RELEASE" > "$OUTPUT_DIR/kernel.release"
+    cp -f "$KERNEL_DIR/.config" "$OUTPUT_DIR/config-$KERNEL_RELEASE"
+    cp -f "$KERNEL_DIR/.config" "$OUTPUT_DIR/kernel.config"
+    MODULE_TREE="$OUTPUT_DIR/modules_install/lib/modules/$KERNEL_RELEASE"
+    module_tree_fingerprint > "$OUTPUT_DIR/kernel.modules-fingerprint"
+    cp -v arch/arm64/boot/Image.gz "$OUTPUT_DIR/Image.gz"
+    printf '%s\n' "$EXPECTED_CORE_KEY" > "$CORE_KEY_FILE"
+fi
+
 # Accept either built-in or modular Wi-Fi/MSS drivers, then fingerprint the
 # exact module tree so boot packaging can reject a stale same-release rootfs.
 MODULES_BUILTIN="$OUTPUT_DIR/modules_install/lib/modules/$KERNEL_RELEASE/modules.builtin"
@@ -415,22 +474,11 @@ for builtin_path in \
     fi
 done
 
-MODULE_TREE="$OUTPUT_DIR/modules_install/lib/modules/$KERNEL_RELEASE"
-(
-    cd "$MODULE_TREE"
-    find . -type f -name '*.ko' -print0 |
-        LC_ALL=C sort -z |
-        xargs -0 -r sha256sum
-) | sha256sum | cut -d' ' -f1 > "$OUTPUT_DIR/kernel.modules-fingerprint"
-
-# Copy kernel image
-cp -v arch/arm64/boot/Image.gz "$OUTPUT_DIR/Image.gz"
-
 # Copy DTB
 cp -v arch/arm64/boot/dts/qcom/sdm845-razer-aura.dtb "$OUTPUT_DIR/sdm845-razer-aura.dtb"
 
 # Create concatenated Image.gz-dtb (needed for some bootloaders)
-cat arch/arm64/boot/Image.gz \
+cat "$OUTPUT_DIR/Image.gz" \
     arch/arm64/boot/dts/qcom/sdm845-razer-aura.dtb \
     > "$OUTPUT_DIR/Image.gz-dtb"
 
@@ -450,6 +498,7 @@ copy_aux_output "$OUTPUT_DIR/sdm845-razer-aura.dtb" "$WIN_OUTPUT_DIR/sdm845-raze
 copy_aux_output "$OUTPUT_DIR/Image.gz-dtb" "$WIN_OUTPUT_DIR/Image.gz-dtb"
 copy_aux_output "$OUTPUT_DIR/kernel.release" "$WIN_OUTPUT_DIR/kernel.release"
 copy_aux_output "$OUTPUT_DIR/kernel.modules-fingerprint" "$WIN_OUTPUT_DIR/kernel.modules-fingerprint"
+copy_aux_output "$OUTPUT_DIR/kernel.core-key" "$WIN_OUTPUT_DIR/kernel.core-key"
 copy_aux_output "$OUTPUT_DIR/config-$KERNEL_RELEASE" "$WIN_OUTPUT_DIR/config-$KERNEL_RELEASE"
 copy_aux_output "$OUTPUT_DIR/kernel.config" "$WIN_OUTPUT_DIR/kernel.config"
 echo "mainline" > "$OUTPUT_DIR/kernel.flavor"

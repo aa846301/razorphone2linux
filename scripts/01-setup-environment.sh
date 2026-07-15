@@ -38,6 +38,7 @@ else
         device-tree-compiler \
         debootstrap qemu-user-static \
         rsync git curl wget cpio lz4 \
+        ccache \
         python3 python3-pip python3-git python3-libfdt python3-ply \
         libgmp-dev libmpc-dev \
         android-sdk-libsparse-utils \
@@ -56,7 +57,7 @@ else
     echo "[1/5] Build dependencies installed."
 fi
 
-for required in aarch64-linux-gnu-gcc git dtc debootstrap qemu-aarch64-static \
+for required in aarch64-linux-gnu-gcc ccache git dtc debootstrap qemu-aarch64-static \
         rsync cpio img2simg python3 7z zerofree; do
     if ! command -v "$required" >/dev/null 2>&1; then
         echo "ERROR: required tool is missing: $required" >&2
