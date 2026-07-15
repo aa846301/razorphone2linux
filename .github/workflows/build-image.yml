@@ -41,7 +41,6 @@ jobs:
       RAZER_DISPLAY_NATIVE_PANEL: "1"
       RAZER_BOOT_DISPLAY_MODE: normal
       RAZER_SKIP_REFERENCE: "1"
-      RAZER_BUILD_CACHE_VERSION: "1"
       RAZER_FACTORY_ZIP_URL: ${{ secrets.RAZER_FACTORY_ZIP_URL || vars.RAZER_FACTORY_ZIP_URL }}
       RAZER_FACTORY_ZIP_AUTH_HEADER: ${{ secrets.RAZER_FACTORY_ZIP_AUTH_HEADER }}
       RAZER_WORKDIR: /home/runner/razorphone2linux
@@ -81,7 +80,7 @@ jobs:
           echo "CI ref: ${GITHUB_REF_NAME}"
           echo "CI userspace profile: ${profile}"
 
-      - name: Compute build identity and output cache key
+      - name: Compute build identity
         id: build-meta
         shell: bash
         run: |
@@ -94,107 +93,14 @@ jobs:
           fi
           zip_name="razorphone2linux-${version}"
 
-          firmware_url_hash="$(printf '%s' "${RAZER_FACTORY_ZIP_URL}" | sha256sum | cut -d' ' -f1)"
-          input_hash="$(
-            {
-              printf 'image_profile=%s\n' "${RAZER_IMAGE_PROFILE}"
-              printf 'userspace_profile=%s\n' "${RAZER_USERSPACE_PROFILE}"
-              printf 'display_native_panel=%s\n' "${RAZER_DISPLAY_NATIVE_PANEL}"
-              printf 'boot_display_mode=%s\n' "${RAZER_BOOT_DISPLAY_MODE}"
-              printf 'build_cache_version=%s\n' "${RAZER_BUILD_CACHE_VERSION}"
-              printf 'factory_url_hash=%s\n' "${firmware_url_hash}"
-              # Keep CI plumbing edits from invalidating the full Linux image cache.
-              # If build semantics change, bump RAZER_BUILD_CACHE_VERSION above.
-              git ls-files -s -- \
-                config/build.env \
-                config/device.env \
-                config/kernel-source.env \
-                config/razer-aura.config \
-                config/userspace.env \
-                dts/sdm845-razer-aura.dts \
-                ':(glob)kernel-patches/*.patch' \
-                kernel-source/linux/.razer-executable-files \
-                kernel-source/linux/.razer-kernel-commit \
-                panel-driver/panel-novatek-nt36830.c \
-                rootfs-binaries/arm64/pd-mapper \
-                rootfs-binaries/arm64/rmtfs-razer-test \
-                rootfs-binaries/arm64/tqftpserv \
-                rootfs-packages/arm64/tqftpserv_1.0-5_arm64.deb \
-                rootfs-scripts/initramfs-tools/razer-bluetooth-firmware \
-                rootfs-scripts/initramfs-tools/razer-gpu-firmware \
-                rootfs-scripts/initramfs-tools/razer-root-local-top \
-                rootfs-scripts/initramfs-tools/razer-root.conf \
-                rootfs-scripts/kiosk-prototype/README.md \
-                rootfs-scripts/kiosk-prototype/hakiosk.sh \
-                rootfs-scripts/kiosk-prototype/sway-kiosk.conf \
-                rootfs-scripts/kiosk-prototype/touchviz.html \
-                rootfs-scripts/razer-charge-limits.service \
-                rootfs-scripts/razer-charge-limits.sh \
-                rootfs-scripts/razer-panel-autocolortest.service \
-                rootfs-scripts/razer-panel-colortest.py \
-                rootfs-scripts/razer-panel-colortest.service \
-                rootfs-scripts/razer-panel-idle-blank.service \
-                rootfs-scripts/razer-panel-idle-blank.sh \
-                rootfs-scripts/razer-quiet-console.service \
-                rootfs-scripts/razer-wifi-ready.sh \
-                rootfs-scripts/usb-gadget-setup.sh \
-                tools/mkbootimg.py
-            } | sha256sum | cut -d' ' -f1
-          )"
-          output_cache_key="build-output-${RUNNER_OS}-${RUNNER_ARCH}-${RAZER_IMAGE_PROFILE}-${RAZER_USERSPACE_PROFILE}-${input_hash}"
-
           echo "BUILD_VERSION=${version}" >> "$GITHUB_ENV"
           echo "BUILD_ZIP_NAME=${zip_name}" >> "$GITHUB_ENV"
           echo "BUILD_ZIP_PATH=release/${zip_name}.zip" >> "$GITHUB_ENV"
-          echo "BUILD_OUTPUT_CACHE_DIR=${RAZER_WORKDIR}/build-output-cache/${RAZER_IMAGE_PROFILE}" >> "$GITHUB_ENV"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "zip_name=${zip_name}" >> "$GITHUB_OUTPUT"
-          echo "output_cache_key=${output_cache_key}" >> "$GITHUB_OUTPUT"
           echo "Build version: ${version}"
-          echo "Output cache key: ${output_cache_key}"
-
-      - name: Restore completed build output cache
-        id: build-output-cache
-        uses: actions/cache/restore@v6
-        with:
-          path: ${{ env.RAZER_WORKDIR }}/build-output-cache/${{ env.RAZER_IMAGE_PROFILE }}
-          key: ${{ steps.build-meta.outputs.output_cache_key }}
-
-      - name: Restore cached build outputs into workspace
-        id: cached-build
-        if: steps.build-output-cache.outputs.cache-hit == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cache_dir="${BUILD_OUTPUT_CACHE_DIR}"
-          repo_output="output/${RAZER_IMAGE_PROFILE}"
-
-          mkdir -p "${repo_output}"
-          cp -a "${cache_dir}/repo-output/." "${repo_output}/"
-
-          required=(
-            boot.img
-            rootfs-sparse.img
-            Image.gz-dtb
-            kernel.config
-            kernel.release
-            kernel.modules-fingerprint
-            rootfs.modules-fingerprint
-            userspace.profile
-            initrd.img
-            vbmeta_disabled.img
-          )
-          for file in "${required[@]}"; do
-            test -s "${repo_output}/${file}" || {
-              echo "ERROR: cached build output is missing ${repo_output}/${file}" >&2
-              exit 1
-            }
-          done
-          echo "ready=true" >> "$GITHUB_OUTPUT"
-          echo "Using cached completed build outputs."
 
       - name: Validate firmware source
-        if: steps.cached-build.outputs.ready != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -215,7 +121,6 @@ jobs:
           fi
 
       - name: Prepare factory firmware paths
-        if: steps.cached-build.outputs.ready != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -223,7 +128,7 @@ jobs:
 
       - name: Compute factory firmware cache key
         id: factory-cache-key
-        if: steps.cached-build.outputs.ready != 'true' && env.RAZER_FACTORY_ZIP_URL != ''
+        if: env.RAZER_FACTORY_ZIP_URL != ''
         shell: bash
         run: |
           set -euo pipefail
@@ -232,14 +137,14 @@ jobs:
 
       - name: Restore factory firmware package cache
         id: factory-zip-cache
-        if: steps.cached-build.outputs.ready != 'true' && env.RAZER_FACTORY_ZIP_URL != ''
+        if: env.RAZER_FACTORY_ZIP_URL != ''
         uses: actions/cache/restore@v6
         with:
           path: ${{ env.RAZER_FACTORY_ZIP }}
           key: ${{ steps.factory-cache-key.outputs.key }}
 
       - name: Download factory firmware package
-        if: steps.cached-build.outputs.ready != 'true' && env.RAZER_FACTORY_ZIP_URL != '' && steps.factory-zip-cache.outputs.cache-hit != 'true'
+        if: env.RAZER_FACTORY_ZIP_URL != '' && steps.factory-zip-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -253,7 +158,7 @@ jobs:
           test -s "${RAZER_FACTORY_ZIP}"
 
       - name: Save factory firmware package cache
-        if: steps.cached-build.outputs.ready != 'true' && env.RAZER_FACTORY_ZIP_URL != '' && steps.factory-zip-cache.outputs.cache-hit != 'true'
+        if: env.RAZER_FACTORY_ZIP_URL != '' && steps.factory-zip-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@v6
         with:
@@ -261,7 +166,6 @@ jobs:
           key: ${{ steps.factory-cache-key.outputs.key }}
 
       - name: Install firmware extraction tools
-        if: steps.cached-build.outputs.ready != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -281,7 +185,7 @@ jobs:
           fi
 
       - name: Extract modem image from factory package
-        if: steps.cached-build.outputs.ready != 'true' && env.RAZER_FACTORY_ZIP_URL != ''
+        if: env.RAZER_FACTORY_ZIP_URL != ''
         shell: bash
         run: |
           set -euo pipefail
@@ -320,7 +224,6 @@ jobs:
           test -s "${RAZER_MODEM_IMG}"
 
       - name: Extract modem firmware blobs
-        if: steps.cached-build.outputs.ready != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -390,7 +293,6 @@ jobs:
           test -f firmware/qcom/sdm845/Razer/aura/mba.mbn
 
       - name: Extract Bluetooth firmware blobs
-        if: steps.cached-build.outputs.ready != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -463,7 +365,6 @@ jobs:
           test -s firmware/qca/Razer/aura/crnv21.bin
 
       - name: Free runner disk space
-        if: steps.cached-build.outputs.ready != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -473,7 +374,6 @@ jobs:
 
       - name: Detect in-repository kernel source
         id: bundled-kernel
-        if: steps.cached-build.outputs.ready != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -487,7 +387,7 @@ jobs:
 
       - name: Restore pinned kernel checkout cache
         id: kernel-cache
-        if: steps.cached-build.outputs.ready != 'true' && steps.bundled-kernel.outputs.found != 'true'
+        if: steps.bundled-kernel.outputs.found != 'true'
         uses: actions/cache/restore@v6
         with:
           path: ${{ env.RAZER_WORKDIR }}/kernel/linux
@@ -496,7 +396,7 @@ jobs:
             kernel-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Prepare cached kernel checkout
-        if: steps.cached-build.outputs.ready != 'true' && steps.bundled-kernel.outputs.found != 'true'
+        if: steps.bundled-kernel.outputs.found != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -511,7 +411,6 @@ jobs:
           fi
 
       - name: Install build environment and pinned kernel
-        if: steps.cached-build.outputs.ready != 'true'
         shell: bash
         run: |
           # ==========================================================================
@@ -708,7 +607,7 @@ jobs:
           echo "    - ath10k/WCN3990/hw1.0/firmware-5.bin"
 
       - name: Save pinned kernel checkout cache
-        if: steps.cached-build.outputs.ready != 'true' && steps.bundled-kernel.outputs.found != 'true' && steps.kernel-cache.outputs.cache-hit != 'true'
+        if: steps.bundled-kernel.outputs.found != 'true' && steps.kernel-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@v6
         with:
@@ -716,7 +615,6 @@ jobs:
           key: kernel-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-source.env') }}
 
       - name: Build kernel with native panel and GPU
-        if: steps.cached-build.outputs.ready != 'true'
         shell: bash
         run: |
           # ==========================================================================
@@ -1191,7 +1089,6 @@ jobs:
           echo "Next: Run bash 03-build-rootfs.sh"
 
       - name: Assert release kernel configuration
-        if: steps.cached-build.outputs.ready != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -1216,7 +1113,6 @@ jobs:
           fi
 
       - name: Build ARM64 rootfs
-        if: steps.cached-build.outputs.ready != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -2615,7 +2511,6 @@ jobs:
           ROOTFS_BUILD_EOF
 
       - name: Package boot image
-        if: steps.cached-build.outputs.ready != 'true'
         shell: bash
         run: |
           # ==========================================================================
@@ -3000,27 +2895,6 @@ jobs:
           native_panel=${RAZER_DISPLAY_NATIVE_PANEL}
           boot_display_mode=${RAZER_BOOT_DISPLAY_MODE}
           EOF
-
-      - name: Stage completed build output cache
-        if: steps.cached-build.outputs.ready != 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cache_dir="${BUILD_OUTPUT_CACHE_DIR}"
-          repo_output="output/${RAZER_IMAGE_PROFILE}"
-
-          rm -rf "${cache_dir}"
-          mkdir -p "${cache_dir}/repo-output"
-          rsync -a --delete --exclude rootfs.img "${repo_output}/" "${cache_dir}/repo-output/"
-          du -sh "${cache_dir}" || true
-
-      - name: Save completed build output cache
-        if: steps.cached-build.outputs.ready != 'true'
-        continue-on-error: true
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ env.RAZER_WORKDIR }}/build-output-cache/${{ env.RAZER_IMAGE_PROFILE }}
-          key: ${{ steps.build-meta.outputs.output_cache_key }}
 
       - name: Package release zip
         shell: bash
