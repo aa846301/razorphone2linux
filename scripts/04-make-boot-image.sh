@@ -193,6 +193,13 @@ if command -v lsinitramfs >/dev/null 2>&1; then
         echo "ERROR: initrd does not appear to contain udev; by-partlabel root discovery may fail."
         exit 1
     fi
+    for bt_fw in usr/lib/firmware/qca/crbtfw21.tlv \
+                 usr/lib/firmware/qca/Razer/aura/crnv21.bin; do
+        grep -qx "$bt_fw" "$INITRD_LIST" || {
+            echo "ERROR: initrd is missing Bluetooth firmware: /$bt_fw"
+            exit 1
+        }
+    done
 else
     echo "WARNING: lsinitramfs not available; initrd content validation skipped."
 fi

@@ -120,6 +120,7 @@ jobs:
                 rootfs-binaries/arm64/rmtfs-razer-test \
                 rootfs-binaries/arm64/tqftpserv \
                 rootfs-packages/arm64/tqftpserv_1.0-5_arm64.deb \
+                rootfs-scripts/initramfs-tools/razer-bluetooth-firmware \
                 rootfs-scripts/initramfs-tools/razer-gpu-firmware \
                 rootfs-scripts/initramfs-tools/razer-root-local-top \
                 rootfs-scripts/initramfs-tools/razer-root.conf \
@@ -377,6 +378,56 @@ jobs:
             echo "Using firmware already present in firmware/."
           fi
           test -f firmware/qcom/sdm845/Razer/aura/mba.mbn
+
+      - name: Extract Bluetooth firmware blobs
+        if: steps.cached-build.outputs.ready != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${RAZER_FACTORY_ZIP_URL}" ]; then
+            bluetooth_entry="$(
+              7z l -slt "${RAZER_FACTORY_ZIP}" |
+                awk -F' = ' '/^Path = / {
+                  path = $2
+                  gsub(/\\/, "/", path)
+                  if (path ~ /(^|\/)bluetooth\.img$/) {
+                    print path
+                    exit
+                  }
+                }'
+            )"
+            if [ -z "${bluetooth_entry}" ]; then
+              echo "ERROR: bluetooth.img was not found inside ${RAZER_FACTORY_ZIP}" >&2
+              exit 1
+            fi
+
+            tmpdir="$(mktemp -d)"
+            cleanup() {
+              rm -rf "${tmpdir}"
+            }
+            trap cleanup EXIT
+
+            7z e -y -o"${tmpdir}" "${RAZER_FACTORY_ZIP}" "${bluetooth_entry}" >/dev/null
+            bluetooth_img="${tmpdir}/bluetooth.img"
+            test -s "${bluetooth_img}"
+            mkdir -p "${tmpdir}/fs"
+            7z x -y -o"${tmpdir}/fs" "${bluetooth_img}" >/dev/null
+
+            tlv_src="$(find "${tmpdir}/fs" -type f -iname crbtfw21.tlv -print -quit)"
+            nvm_src="$(find "${tmpdir}/fs" -type f -iname crnv21.bin -print -quit)"
+            if [ -z "${tlv_src}" ] || [ -z "${nvm_src}" ]; then
+              echo "ERROR: WCN3990 firmware was not found in bluetooth.img" >&2
+              exit 1
+            fi
+
+            install -D -m 0644 "${tlv_src}" firmware/qca/crbtfw21.tlv
+            install -D -m 0644 "${nvm_src}" firmware/qca/crnv21.bin
+            install -D -m 0644 "${nvm_src}" firmware/qca/Razer/aura/crnv21.bin
+          else
+            echo "Using Bluetooth firmware already present in firmware/qca/."
+          fi
+          test -s firmware/qca/crbtfw21.tlv
+          test -s firmware/qca/Razer/aura/crnv21.bin
 
       - name: Free runner disk space
         if: steps.cached-build.outputs.ready != 'true'
@@ -1358,6 +1409,9 @@ jobs:
           install -D -m 0755 \
               "$PROJECT_DIR/rootfs-scripts/initramfs-tools/razer-gpu-firmware" \
               "$CHROOT_DIR/etc/initramfs-tools/hooks/razer-gpu-firmware"
+          install -D -m 0755 \
+              "$PROJECT_DIR/rootfs-scripts/initramfs-tools/razer-bluetooth-firmware" \
+              "$CHROOT_DIR/etc/initramfs-tools/hooks/razer-bluetooth-firmware"
           # Panel bring-up color test: tool + units ship in the image, but the
           # on-every-boot autocolortest is only auto-enabled by the debug refresh
           # path (03-refresh-rootfs.sh), not in a from-scratch production build.
@@ -1475,6 +1529,7 @@ jobs:
               curl wget \
               network-manager \
               openssh-server \
+              bluez \
               initramfs-tools \
               wpasupplicant \
               kmod \
@@ -1658,6 +1713,15 @@ jobs:
           # Step 6b: Generate initramfs after kernel modules exist
           # -------------------------------------------------------
           echo "[6b/10] Generating Ubuntu initramfs..."
+
+          for bt_fw in qca/crbtfw21.tlv qca/Razer/aura/crnv21.bin; do
+              if [ ! -f "$FIRMWARE_DIR/$bt_fw" ]; then
+                  echo "ERROR: required Razer Bluetooth firmware is missing: $FIRMWARE_DIR/$bt_fw"
+                  exit 1
+              fi
+              install -D -m 0644 "$FIRMWARE_DIR/$bt_fw" \
+                  "$CHROOT_DIR/usr/lib/firmware/$bt_fw"
+          done
 
           mkdir -p "$CHROOT_DIR/boot"
           if [ -f "$OUTPUT_DIR/config-$KERNEL_VERSION" ]; then
@@ -2086,6 +2150,7 @@ jobs:
           fi
 
           systemctl enable NetworkManager 2>/dev/null || true
+          systemctl enable bluetooth.service 2>/dev/null || true
 
           cat > /etc/systemd/system/razer-wifi-ready.service <<'WIFI_READY_EOF'
           [Unit]
@@ -2714,6 +2779,13 @@ jobs:
                   echo "ERROR: initrd does not appear to contain udev; by-partlabel root discovery may fail."
                   exit 1
               fi
+              for bt_fw in usr/lib/firmware/qca/crbtfw21.tlv \
+                           usr/lib/firmware/qca/Razer/aura/crnv21.bin; do
+                  grep -qx "$bt_fw" "$INITRD_LIST" || {
+                      echo "ERROR: initrd is missing Bluetooth firmware: /$bt_fw"
+                      exit 1
+                  }
+              done
           else
               echo "WARNING: lsinitramfs not available; initrd content validation skipped."
           fi

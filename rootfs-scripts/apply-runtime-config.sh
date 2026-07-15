@@ -56,6 +56,7 @@ else
 fi
 
 systemctl enable NetworkManager 2>/dev/null || true
+systemctl enable bluetooth.service 2>/dev/null || true
 
 cat > /etc/systemd/system/razer-wifi-ready.service <<'WIFI_READY_EOF'
 [Unit]

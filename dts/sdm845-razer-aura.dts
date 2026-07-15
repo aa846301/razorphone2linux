@@ -298,6 +298,18 @@
 };
 
 /*
+ * Razer's downstream SDM845 poweroff path drops PS_HOLD at 0x0c264000
+ * after programming PM8998 PON for shutdown. PSCI SYSTEM_OFF returns on
+ * this firmware, so expose the register to the mainline msm-poweroff driver.
+ */
+&soc {
+	restart@c264000 {
+		compatible = "qcom,pshold";
+		reg = <0 0x0c264000 0 0x4>;
+	};
+};
+
+/*
  * ==========================================================================
  * Subsystem Firmware Paths
  * ==========================================================================

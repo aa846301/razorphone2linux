@@ -1,0 +1,19 @@
+#!/bin/sh
+# Bundle WCN3990 Bluetooth firmware before the built-in QCA UART driver probes.
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in
+prereqs) prereqs; exit 0 ;;
+esac
+
+. /usr/share/initramfs-tools/hook-functions
+
+for f in /usr/lib/firmware/qca/crbtfw21.tlv \
+         /usr/lib/firmware/qca/Razer/aura/crnv21.bin; do
+	if [ ! -f "$f" ]; then
+		echo "ERROR: required Razer Bluetooth firmware is missing: $f" >&2
+		exit 1
+	fi
+	copy_file firmware "$f"
+done
+exit 0

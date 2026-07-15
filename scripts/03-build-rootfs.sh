@@ -184,6 +184,9 @@ install -D -m 0755 \
 install -D -m 0755 \
     "$PROJECT_DIR/rootfs-scripts/initramfs-tools/razer-gpu-firmware" \
     "$CHROOT_DIR/etc/initramfs-tools/hooks/razer-gpu-firmware"
+install -D -m 0755 \
+    "$PROJECT_DIR/rootfs-scripts/initramfs-tools/razer-bluetooth-firmware" \
+    "$CHROOT_DIR/etc/initramfs-tools/hooks/razer-bluetooth-firmware"
 # Panel bring-up color test: tool + units ship in the image, but the
 # on-every-boot autocolortest is only auto-enabled by the debug refresh
 # path (03-refresh-rootfs.sh), not in a from-scratch production build.
@@ -301,6 +304,7 @@ apt install -y \
     curl wget \
     network-manager \
     openssh-server \
+    bluez \
     initramfs-tools \
     wpasupplicant \
     kmod \
@@ -491,6 +495,15 @@ echo "  Kernel modules installed."
 # Step 6b: Generate initramfs after kernel modules exist
 # -------------------------------------------------------
 echo "[6b/10] Generating Ubuntu initramfs..."
+
+for bt_fw in qca/crbtfw21.tlv qca/Razer/aura/crnv21.bin; do
+    if [ ! -f "$FIRMWARE_DIR/$bt_fw" ]; then
+        echo "ERROR: required Razer Bluetooth firmware is missing: $FIRMWARE_DIR/$bt_fw"
+        exit 1
+    fi
+    install -D -m 0644 "$FIRMWARE_DIR/$bt_fw" \
+        "$CHROOT_DIR/usr/lib/firmware/$bt_fw"
+done
 
 mkdir -p "$CHROOT_DIR/boot"
 if [ -f "$OUTPUT_DIR/config-$KERNEL_VERSION" ]; then

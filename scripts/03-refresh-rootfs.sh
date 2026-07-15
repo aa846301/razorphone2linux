@@ -132,6 +132,9 @@ install -D -m 0755 \
 install -D -m 0755 \
     "$PROJECT_DIR/rootfs-scripts/initramfs-tools/razer-gpu-firmware" \
     "$MOUNT_DIR/etc/initramfs-tools/hooks/razer-gpu-firmware"
+install -D -m 0755 \
+    "$PROJECT_DIR/rootfs-scripts/initramfs-tools/razer-bluetooth-firmware" \
+    "$MOUNT_DIR/etc/initramfs-tools/hooks/razer-bluetooth-firmware"
 install -D -m 0644 \
     "$PROJECT_DIR/rootfs-scripts/razer-quiet-console.service" \
     "$MOUNT_DIR/etc/systemd/system/razer-quiet-console.service"
@@ -174,6 +177,12 @@ if [ -f "$PROJECT_DIR/config/device.env" ]; then
 fi
 
 echo "[1/5] Syncing firmware blobs and repo-controlled packages..."
+if ! chroot "$MOUNT_DIR" dpkg-query -W -f='${Status}' bluez 2>/dev/null | \
+        grep -q 'install ok installed'; then
+    echo "ERROR: BlueZ is missing from the reusable rootfs."
+    echo "Run scripts/build-all.sh all once so Bluetooth userspace is installed."
+    exit 1
+fi
 if [ ! -f "$FIRMWARE_DIR/qcom/sdm845/Razer/aura/mba.mbn" ] && [ "${RAZER_ALLOW_MISSING_FIRMWARE:-0}" != "1" ]; then
     echo "ERROR: $FIRMWARE_DIR/qcom/sdm845/Razer/aura/mba.mbn is missing."
     echo "firmware/ is gitignored; copy it from an existing checkout first, or"
