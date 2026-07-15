@@ -34,21 +34,26 @@ export CROSS_COMPILE=aarch64-linux-gnu-
 # commit that is intentionally not an upstream annotated release tag.
 export LOCALVERSION=""
 
-CCACHE_DIR="${RAZER_CCACHE_DIR:-$WORKDIR/cache/ccache}"
-if command -v ccache >/dev/null 2>&1; then
-    mkdir -p "$CCACHE_DIR"
-    export CCACHE_DIR
-    export CCACHE_BASEDIR="$KERNEL_DIR"
-    export CCACHE_NOHASHDIR=true
-    export CC="ccache ${CROSS_COMPILE}gcc"
-    export HOSTCC="ccache gcc"
-    ccache --max-size "${RAZER_CCACHE_MAX_SIZE:-2G}" >/dev/null
-fi
-
 CORE_KEY_FILE="$OUTPUT_DIR/kernel.core-key"
 EXPECTED_CORE_KEY="$(RAZER_IMAGE_PROFILE="$IMAGE_PROFILE" \
     bash "$PROJECT_DIR/scripts/kernel-core-cache-key.sh")"
 REUSE_KERNEL_CORE=0
+
+CCACHE_DIR="${RAZER_CCACHE_DIR:-$WORKDIR/cache/ccache}"
+if command -v ccache >/dev/null 2>&1; then
+    CCACHE_EXE="$(command -v ccache)"
+    CCACHE_BIN_DIR="$WORKDIR/cache/ccache-bin"
+    mkdir -p "$CCACHE_DIR"
+    mkdir -p "$CCACHE_BIN_DIR"
+    for compiler in gcc g++ "${CROSS_COMPILE}gcc" "${CROSS_COMPILE}g++"; do
+        ln -sfn "$CCACHE_EXE" "$CCACHE_BIN_DIR/$compiler"
+    done
+    export CCACHE_DIR
+    export CCACHE_BASEDIR="$KERNEL_DIR"
+    export CCACHE_NOHASHDIR=true
+    export PATH="$CCACHE_BIN_DIR:$PATH"
+    ccache --max-size "${RAZER_CCACHE_MAX_SIZE:-2G}" >/dev/null
+fi
 
 # Default to 8 jobs (12-core host: leaves headroom for the desktop; the old
 # hard cap of 4 wasted most of the machine). Override with RAZER_MAX_JOBS.
@@ -398,22 +403,37 @@ module_tree_fingerprint() {
     ) | sha256sum | cut -d' ' -f1
 }
 
-if [ "${RAZER_FORCE_KERNEL_REBUILD:-0}" != "1" ] && \
-   [ -s "$CORE_KEY_FILE" ] && \
-   [ "$(tr -d '\r\n' < "$CORE_KEY_FILE")" = "$EXPECTED_CORE_KEY" ] && \
-   [ -s "$OUTPUT_DIR/Image.gz" ] && \
-   [ -s "$OUTPUT_DIR/kernel.config" ] && \
-   [ -s "$OUTPUT_DIR/kernel.release" ] && \
-   [ "$(tr -d '\r\n' < "$OUTPUT_DIR/kernel.release")" = "$KERNEL_RELEASE" ] && \
-   [ -s "$OUTPUT_DIR/config-$KERNEL_RELEASE" ] && \
-   [ -s "$OUTPUT_DIR/kernel.modules-fingerprint" ] && \
-   [ -d "$MODULE_TREE" ] && \
-   cmp -s .config "$OUTPUT_DIR/kernel.config" && \
-   [ "$(module_tree_fingerprint)" = "$(tr -d '\r\n' < "$OUTPUT_DIR/kernel.modules-fingerprint")" ]; then
+CORE_CACHE_REASON=""
+if [ "${RAZER_FORCE_KERNEL_REBUILD:-0}" = "1" ]; then
+    CORE_CACHE_REASON="forced rebuild requested"
+elif [ ! -s "$CORE_KEY_FILE" ]; then
+    CORE_CACHE_REASON="kernel.core-key is missing"
+elif [ "$(tr -d '\r\n' < "$CORE_KEY_FILE")" != "$EXPECTED_CORE_KEY" ]; then
+    CORE_CACHE_REASON="kernel core identity differs"
+elif [ ! -s "$OUTPUT_DIR/Image.gz" ]; then
+    CORE_CACHE_REASON="Image.gz is missing"
+elif [ ! -s "$OUTPUT_DIR/kernel.config" ]; then
+    CORE_CACHE_REASON="kernel.config is missing"
+elif [ ! -s "$OUTPUT_DIR/kernel.release" ]; then
+    CORE_CACHE_REASON="kernel.release is missing"
+elif [ "$(tr -d '\r\n' < "$OUTPUT_DIR/kernel.release")" != "$KERNEL_RELEASE" ]; then
+    CORE_CACHE_REASON="kernel release differs"
+elif [ ! -s "$OUTPUT_DIR/kernel.modules-fingerprint" ]; then
+    CORE_CACHE_REASON="module fingerprint is missing"
+elif [ ! -d "$MODULE_TREE" ]; then
+    CORE_CACHE_REASON="module tree is missing"
+elif ! cmp -s .config "$OUTPUT_DIR/kernel.config"; then
+    CORE_CACHE_REASON="generated config differs"
+elif [ "$(module_tree_fingerprint)" != "$(tr -d '\r\n' < "$OUTPUT_DIR/kernel.modules-fingerprint")" ]; then
+    CORE_CACHE_REASON="module tree fingerprint differs"
+fi
+
+if [ -z "$CORE_CACHE_REASON" ]; then
     REUSE_KERNEL_CORE=1
     echo "  Kernel core identity matched; reusing Image.gz and modules."
 else
-    echo "  Kernel core cache unavailable or incompatible; full build required."
+    echo "  Kernel core cache rejected: $CORE_CACHE_REASON."
+    echo "  Full build required."
 fi
 
 # -------------------------------------------------------
@@ -464,6 +484,8 @@ if [ "$REUSE_KERNEL_CORE" != "1" ]; then
     module_tree_fingerprint > "$OUTPUT_DIR/kernel.modules-fingerprint"
     cp -v arch/arm64/boot/Image.gz "$OUTPUT_DIR/Image.gz"
     printf '%s\n' "$EXPECTED_CORE_KEY" > "$CORE_KEY_FILE"
+else
+    cp -f "$OUTPUT_DIR/kernel.config" "$OUTPUT_DIR/config-$KERNEL_RELEASE"
 fi
 
 # Accept either built-in or modular Wi-Fi/MSS drivers, then fingerprint the

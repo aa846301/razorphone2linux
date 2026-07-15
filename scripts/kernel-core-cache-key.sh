@@ -8,7 +8,7 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 export PROJECT_DIR
 source "$PROJECT_DIR/config/kernel-source.env"
 
-CACHE_VERSION="${RAZER_KERNEL_CORE_CACHE_VERSION:-1}"
+CACHE_VERSION="${RAZER_KERNEL_CORE_CACHE_VERSION:-2}"
 COMPILER_ID="$(aarch64-linux-gnu-gcc -v 2>&1 || echo unavailable)"
 SOURCE_TREE_ID="$({
     git -C "$PROJECT_DIR" ls-files -s -- kernel-source/linux |
@@ -33,9 +33,7 @@ SOURCE_TREE_ID="$({
             config/kernel-source.env \
             config/razer-aura.config \
             ':(glob)kernel-patches/*.patch' \
-            panel-driver/panel-novatek-nt36830.c \
-            scripts/02-build-kernel.sh \
-            scripts/kernel-core-cache-key.sh |
+            panel-driver/panel-novatek-nt36830.c |
             sort -z
     )
 } | sha256sum | cut -d' ' -f1
