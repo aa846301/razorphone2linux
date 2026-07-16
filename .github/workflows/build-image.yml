@@ -242,6 +242,18 @@ jobs:
             ${{ env.RAZER_WORKDIR }}/output/${{ env.RAZER_IMAGE_PROFILE }}/userspace.profile
           key: ${{ steps.rootfs-cache-key.outputs.key }}
 
+      - name: Restore rootfs download caches
+        if: steps.rootfs-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ${{ env.RAZER_WORKDIR }}/cache/debootstrap
+            ${{ env.RAZER_WORKDIR }}/cache/apt-archives
+            ${{ env.RAZER_WORKDIR }}/cache/pip
+          key: rootfs-downloads-${{ runner.os }}-${{ runner.arch }}-noble-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            rootfs-downloads-${{ runner.os }}-${{ runner.arch }}-noble-v1-
+
       - name: Free runner disk space
         if: steps.rootfs-cache.outputs.cache-hit != 'true'
         run: |
@@ -259,7 +271,19 @@ jobs:
         if: steps.rootfs-cache.outputs.cache-hit != 'true'
         run: |
           sudo --preserve-env=RAZER_WORKDIR,RAZER_IMAGE_PROFILE,RAZER_USERSPACE_PROFILE \
-            env RAZER_ROOTFS_BASE_ONLY=1 bash scripts/03-build-rootfs.sh
+            env RAZER_ROOTFS_BASE_ONLY=1 RAZER_NETWORK_IPV4_ONLY=1 \
+              bash scripts/03-build-rootfs.sh
+
+      - name: Save rootfs download caches
+        if: always() && steps.rootfs-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ${{ env.RAZER_WORKDIR }}/cache/debootstrap
+            ${{ env.RAZER_WORKDIR }}/cache/apt-archives
+            ${{ env.RAZER_WORKDIR }}/cache/pip
+          key: rootfs-downloads-${{ runner.os }}-${{ runner.arch }}-noble-v1-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Save reusable rootfs base cache
         if: steps.rootfs-cache.outputs.cache-hit != 'true'

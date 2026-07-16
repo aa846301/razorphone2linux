@@ -140,7 +140,29 @@ cp -f /usr/bin/qemu-aarch64-static "$CHROOT_DIR/usr/bin/qemu-aarch64-static"
 # Step 2: Debootstrap base system
 # -------------------------------------------------------
 echo "[2/10] Running debootstrap (this takes several minutes)..."
-debootstrap --cache-dir="$DEBOOTSTRAP_CACHE_DIR" --arch arm64 noble "$CHROOT_DIR" "$MIRROR"
+DEBOOTSTRAP_ENV=()
+if [ "${RAZER_NETWORK_IPV4_ONLY:-0}" = "1" ]; then
+    WGETRC_FILE="$WORKDIR/cache/wgetrc-ci"
+    cat > "$WGETRC_FILE" <<'EOF'
+inet4_only = on
+tries = 5
+timeout = 30
+EOF
+    DEBOOTSTRAP_ENV=(env WGETRC="$WGETRC_FILE")
+fi
+for attempt in 1 2 3; do
+    if "${DEBOOTSTRAP_ENV[@]}" debootstrap \
+            --cache-dir="$DEBOOTSTRAP_CACHE_DIR" \
+            --arch arm64 noble "$CHROOT_DIR" "$MIRROR"; then
+        break
+    fi
+    if [ "$attempt" -eq 3 ]; then
+        echo "ERROR: debootstrap failed after $attempt attempts." >&2
+        exit 1
+    fi
+    echo "Debootstrap attempt $attempt failed; keeping downloaded packages and retrying..." >&2
+    sleep $((attempt * 15))
+done
 echo "  Base system installed."
 
 # -------------------------------------------------------
