@@ -16,14 +16,79 @@ charge-limited, and ready for users to install their own software.
 - Adreno 630 hardware GL works through freedreno when the stock Razer
   `a630_zap.*` firmware and linux-firmware `a630_sqe.fw` are present.
 - PMI8998 SMB2 charger, fuel gauge, and RRADC are enabled. A rootfs service
-  uses the standard SMB2 `charge_behaviour` power-supply interface to inhibit
-  battery charging at 80% while retaining USB input, then returns to automatic
-  charging at 40%. The DTS keeps a conservative 2 A charge limit.
+  uses the standard SMB2 `charge_behaviour` power-supply interface to prefer
+  external input above 40%. A charge cycle starts at 40%, remains latched, and
+  stops at 80%. The DTS keeps a conservative 2 A charge limit.
 - The base image blanks the panel after boot on normal images, and keeps a
   console mode available for display debugging.
 - USB NCM networking and SSH work at `192.168.137.133`.
 - WiFi works through MSS/WLFW, `rmtfs`, userspace `pd-mapper`, patched
   `tqftpserv`, Razer FIH NV sharing, and the ath10k host-capability quirk.
+
+## Hardware Support Checklist
+
+This follows the feature categories commonly used by postmarketOS device
+pages. Checked items have been validated on hardware; partial features are
+split so the remaining work stays visible.
+
+- [x] Booting and fastboot flashing
+- [x] Internal UFS storage and rootfs
+- [x] Native dual-DSI/DSC display and touchscreen
+- [x] Panel blanking and backlight off after boot
+- [x] Power and volume keys; orderly Linux power-off (attached VBUS may cold boot it again)
+- [x] Adreno 630 GPU acceleration with proprietary firmware
+- [x] USB NCM networking and SSH
+- [x] WiFi scanning, connection, and reconnect
+- [x] Battery capacity, voltage, current, and temperature reporting
+- [x] Wired charging, USB-PD sink negotiation, and RRADC input telemetry
+- [x] External-power-first 40-80% charge policy
+- [x] Bluetooth firmware, controller initialization, and device scanning
+- [ ] Bluetooth pairing and reconnect validation
+- [ ] Bluetooth audio
+- [ ] System suspend and deep sleep (panel blanking is supported)
+- [ ] Speaker, microphones, earpiece, and USB-C audio
+- [ ] Front and rear cameras
+- [ ] GNSS/GPS
+- [ ] Modem calls, SMS, and mobile data
+- [ ] NFC
+- [ ] USB OTG/host mode
+- [ ] USB 3 SuperSpeed data (fastboot currently uses USB 2)
+- [ ] DisplayPort alternate mode
+- [ ] Accelerometer, gyroscope, magnetometer, proximity, and ambient light
+- [ ] Haptics/vibrator and notification/Chroma LEDs
+- [ ] Fingerprint reader
+- [ ] Qi wireless charging
+- [ ] Full-disk encryption integration
+
+## External Power And Charging
+
+`razer-charge-limits.service` starts in `external-power` mode. While a USB
+input is online and battery capacity is above 40%, it selects
+`inhibit-charge`: the USB power path stays active, but the battery is not
+charged. At 40% or below it starts a latched `charge-cycle`, selects `auto`,
+and keeps charging until capacity reaches 80%. It then returns to
+`external-power` mode. The latch survives service and device restarts in
+`/var/lib/razer-charge-limits/state`.
+
+This policy does not physically disconnect the battery. The battery remains
+available for load transients and will supplement a weak USB source, such as a
+low-current PC port. Check the active policy and electrical flow with:
+
+```bash
+cat /sys/class/power_supply/pmi8998-charger/online
+cat /sys/class/power_supply/pmi8998-charger/charge_behaviour
+cat /sys/class/power_supply/qcom-battery/current_now
+cat /var/lib/razer-charge-limits/state
+```
+
+## Experimental Control Panel
+
+The manually deployed DRM/KMS panel under
+`experiments/razer-control-panel/` shows RRADC USB input voltage, current and
+power separately from battery current. It also provides WiFi setup and a
+temporary `CHARGE TO 100%` test override. It is tracked for development but is
+deliberately not installed by local builds or GitHub Actions releases; see its
+[README](experiments/razer-control-panel/README.md) for deployment commands.
 
 Historical bring-up notes live in `doc/`. The validated WebKitGTK/Epiphany +
 sway Home Assistant kiosk prototype is archived under

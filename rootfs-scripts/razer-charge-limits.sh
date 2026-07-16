@@ -26,7 +26,31 @@ find_supply() {
     return 1
 }
 
-save_state() {
+find_charger() {
+    local psy
+
+    for psy in "$POWER_SUPPLY_ROOT"/*; do
+        [ -r "$psy/type" ] || continue
+        [ "$(cat "$psy/type")" = "USB" ] || continue
+        [ -r "$psy/charge_behaviour" ] || continue
+        printf '%s\n' "$psy"
+        return 0
+    done
+    return 1
+}
+
+active_behaviour() {
+    local raw
+
+    raw="$(cat "$1/charge_behaviour")"
+    if [[ "$raw" =~ \[([^]]+)\] ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+    else
+        printf '%s\n' "$raw"
+    fi
+}
+
+save_mode() {
     mkdir -p "$(dirname "$STATE_FILE")"
     printf '%s\n' "$1" > "$STATE_FILE"
 }
@@ -37,50 +61,53 @@ if ! [[ "$START" =~ ^[0-9]+$ && "$STOP" =~ ^[0-9]+$ ]] ||
     exit 1
 fi
 
-log "policy active: auto at <=${START}%, inhibit charge at >=${STOP}%"
-
-policy_state="auto"
+# Prefer the external input after a fresh install or migration. A charge cycle
+# starts only after capacity reaches START and stays latched through STOP.
+mode="external-power"
 if [ -r "$STATE_FILE" ]; then
-    saved_state="$(cat "$STATE_FILE")"
-    case "$saved_state" in
-        auto|inhibit-charge) policy_state="$saved_state" ;;
-        charging) policy_state="auto" ;;
-        suspended) policy_state="inhibit-charge" ;;
+    saved_mode="$(cat "$STATE_FILE")"
+    case "$saved_mode" in
+        external-power|charge-cycle) mode="$saved_mode" ;;
+        *) save_mode "$mode" ;;
     esac
+else
+    save_mode "$mode"
 fi
+
+log "policy active: external power above ${START}%; charge ${START}-${STOP}%"
 
 while true; do
     battery="$(find_supply Battery || true)"
-    charger="$(find_supply USB || true)"
+    charger="$(find_charger || true)"
 
     if [ -n "$battery" ] && [ -r "$battery/capacity" ] &&
-            [ -n "$charger" ] && [ -r "$charger/charge_behaviour" ] &&
-            [ -w "$charger/charge_behaviour" ]; then
+            [ -n "$charger" ] && [ -w "$charger/charge_behaviour" ]; then
         capacity="$(cat "$battery/capacity")"
-        behaviour="$(cat "$charger/charge_behaviour")"
 
         if [[ "$capacity" =~ ^[0-9]+$ ]]; then
-            if [ "$capacity" -ge "$STOP" ]; then
-                if [ "$policy_state" != "inhibit-charge" ]; then
-                    policy_state="inhibit-charge"
-                    save_state "$policy_state"
+            if [ "$capacity" -le "$START" ] && [ "$mode" != "charge-cycle" ]; then
+                mode="charge-cycle"
+                save_mode "$mode"
+                log "capacity=${capacity}%: charge cycle started"
+            elif [ "$capacity" -ge "$STOP" ] && [ "$mode" != "external-power" ]; then
+                mode="external-power"
+                save_mode "$mode"
+                log "capacity=${capacity}%: charge cycle complete"
+            fi
+
+            online="$(cat "$charger/online" 2>/dev/null || echo 0)"
+            if [ "$online" = "1" ]; then
+                behaviour="$(active_behaviour "$charger")"
+                if [ "$mode" = "charge-cycle" ]; then
+                    desired="auto"
+                else
+                    desired="inhibit-charge"
                 fi
-                if [ "$behaviour" != "inhibit-charge" ]; then
-                    printf 'inhibit-charge\n' > "$charger/charge_behaviour"
-                    log "capacity=${capacity}%: battery charging inhibited; USB input retained"
+
+                if [ "$behaviour" != "$desired" ]; then
+                    printf '%s\n' "$desired" > "$charger/charge_behaviour"
+                    log "capacity=${capacity}%: mode=${mode}, behaviour=${desired}"
                 fi
-            elif [ "$capacity" -le "$START" ]; then
-                if [ "$policy_state" != "auto" ]; then
-                    policy_state="auto"
-                    save_state "$policy_state"
-                fi
-                if [ "$behaviour" != "auto" ]; then
-                    printf 'auto\n' > "$charger/charge_behaviour"
-                    log "capacity=${capacity}%: automatic charging resumed"
-                fi
-            elif [ "$behaviour" != "$policy_state" ]; then
-                printf '%s\n' "$policy_state" > "$charger/charge_behaviour"
-                log "capacity=${capacity}%: restored ${policy_state} policy"
             fi
         else
             log "ignoring invalid capacity '$capacity'"

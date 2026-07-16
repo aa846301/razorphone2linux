@@ -1,0 +1,16 @@
+[Unit]
+Description=Experimental Razer Phone 2 charging and WiFi touch panel
+After=NetworkManager.service systemd-udev-settle.service
+Wants=NetworkManager.service
+ConditionPathExists=/dev/fb0
+ConditionPathExists=/dev/input/event0
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/razer-control-panel
+Restart=on-failure
+RestartSec=2
+Environment=RAZER_PANEL_IDLE_SECONDS=60
+
+[Install]
+WantedBy=multi-user.target
