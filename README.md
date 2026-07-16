@@ -147,12 +147,19 @@ Artifacts are written to `output/base/`. The boot packager refuses to produce
 
 ## GitHub Actions
 
-The `Build flashable image` workflow runs only when a `v*` tag is pushed. The
-YAML spells out the release recipe on GitHub's `ubuntu-24.04-arm` hosted
+The `Build flashable image` workflow runs on `master` pushes to populate
+default-branch caches, and on `v*` tag pushes to publish releases. GitHub
+Actions caches are scoped by Git ref, so a cache created by one release tag is
+not directly visible to the next tag. Let the matching `master` run complete
+before pushing its release tag; the tag run can then reuse kernel core,
+`ccache`, extracted firmware, and rootfs caches from the default branch.
+
+The YAML spells out the release recipe on GitHub's `ubuntu-24.04-arm` hosted
 runner: select the tag profile, import firmware, build the native-panel/GPU
-kernel, build the ARM64 rootfs, package `boot.img`, and upload
-one release zip containing only the flashable images: `boot.img`,
-`rootfs-sparse.img`, and `vbmeta_disabled.img`.
+kernel, build the ARM64 rootfs, package `boot.img`, and upload one release zip
+containing only the flashable images: `boot.img`, `rootfs-sparse.img`, and
+`vbmeta_disabled.img`. A `master` run uploads an Actions artifact for
+validation but does not create a GitHub Release; only a `v*` tag does that.
 
 Set `RAZER_FACTORY_ZIP_URL` as a repository variable or secret pointing to
 `aura-p-release-3201-user-full.zip`. Use a variable for a public upstream URL,
