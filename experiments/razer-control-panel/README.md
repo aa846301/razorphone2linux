@@ -29,6 +29,8 @@ The deployed files on the phone are:
 /usr/local/sbin/razer-kms-present
 /usr/local/sbin/razer-camera-preview
 /usr/local/sbin/razer-camera-launch
+/usr/local/sbin/razer-haptic-test
+/usr/local/sbin/razer-audio-test
 /usr/local/sbin/razer-shutdown-console
 /etc/systemd/system/razer-control-panel.service
 ```
@@ -47,7 +49,9 @@ The rear/front camera buttons configure the qcom-camss media graph for a
 1920x1080 RAW10 stream, start a small V4L2 preview helper, and return to the
 dashboard with the `BACK` button. The helper performs `STREAMOFF`, unmaps all
 capture buffers, and closes the video node on exit. `deploy.ps1` installs the
-`v4l-utils` package when `media-ctl` is not already present.
+`v4l-utils` package when `media-ctl` is not already present. The `VIBRATE`
+and `SOUND` buttons run a one-second force-feedback rumble and a short ALSA
+440 Hz playback test. Their full helpers can also be run with `sudo` over SSH.
 
 If a camera cannot start, the dashboard shows the last launcher error. The
 complete launcher output remains available until the next attempt at

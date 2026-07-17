@@ -344,9 +344,9 @@
 	front_camera_vana: front-camera-vana-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "front_camera_vana";
-		regulator-min-microvolt = <2800000>;
-		regulator-max-microvolt = <2800000>;
-		vin-supply = <&vph_pwr>;
+		regulator-min-microvolt = <1352000>;
+		regulator-max-microvolt = <1352000>;
+		vin-supply = <&vreg_s3a_1p35>;
 		gpio = <&pm8998_gpios 7 GPIO_ACTIVE_HIGH>;
 		enable-active-high;
 	};
@@ -356,7 +356,7 @@
 		regulator-name = "front_camera_vdig";
 		regulator-min-microvolt = <1050000>;
 		regulator-max-microvolt = <1050000>;
-		vin-supply = <&vph_pwr>;
+		vin-supply = <&vreg_s3a_1p35>;
 		gpio = <&pm8998_gpios 4 GPIO_ACTIVE_HIGH>;
 		enable-active-high;
 	};
@@ -1149,10 +1149,11 @@
 	status = "okay";
 	qcom,actuator-type = <HAP_TYPE_LRA>;
 	qcom,wave-shape = <HAP_WAVE_SINE>;
-	qcom,play-mode = <HAP_PLAY_BUFFER>;
+	qcom,play-mode = <HAP_PLAY_DIRECT>;
 	qcom,vmax-mv = <1300>;
 	qcom,current-limit-milliamp = <800>;
 	qcom,wave-play-rate-us = <6667>;
+	qcom,lra-auto-res-mode = <HAP_AUTO_RES_NONE>;
 	qcom,brake-pattern = <0x3 0x3 0x2 0x1>;
 };
 

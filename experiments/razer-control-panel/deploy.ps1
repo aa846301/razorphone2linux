@@ -114,6 +114,8 @@ if ($keyLoginExitCode -ne 0) {
     (Join-Path $experimentDir "razer-control-panel.service") `
     (Join-Path $experimentDir "razer-shutdown-console.sh") `
     (Join-Path $experimentDir "razer-camera-launch.sh") `
+    (Join-Path $experimentDir "razer-haptic-test.sh") `
+    (Join-Path $experimentDir "razer-audio-test.sh") `
     $kmsBinary `
     $cameraBinary `
     "${target}:/tmp/"
@@ -131,9 +133,11 @@ printf '%s' "`$password" | sudo -S install -m 0755 /tmp/razer-shutdown-console.s
 printf '%s' "`$password" | sudo -S install -m 0755 /tmp/razer-kms-present-arm64 /usr/local/sbin/razer-kms-present
 printf '%s' "`$password" | sudo -S install -m 0755 /tmp/razer-camera-preview-arm64 /usr/local/sbin/razer-camera-preview
 printf '%s' "`$password" | sudo -S install -m 0755 /tmp/razer-camera-launch.sh /usr/local/sbin/razer-camera-launch
-if ! command -v media-ctl >/dev/null || ! command -v v4l2-ctl >/dev/null; then
+printf '%s' "`$password" | sudo -S install -m 0755 /tmp/razer-haptic-test.sh /usr/local/sbin/razer-haptic-test
+printf '%s' "`$password" | sudo -S install -m 0755 /tmp/razer-audio-test.sh /usr/local/sbin/razer-audio-test
+if ! command -v media-ctl >/dev/null || ! command -v v4l2-ctl >/dev/null || ! command -v fftest >/dev/null || ! command -v speaker-test >/dev/null; then
     printf '%s' "`$password" | sudo -S apt-get update
-    printf '%s' "`$password" | sudo -S apt-get install -y v4l-utils
+    printf '%s' "`$password" | sudo -S apt-get install -y v4l-utils joystick alsa-utils
 fi
 printf '%s' "`$password" | sudo -S systemctl disable --now razer-panel-idle-blank.service
 printf '%s' "`$password" | sudo -S systemctl disable --now getty@tty1.service

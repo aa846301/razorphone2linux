@@ -1,5 +1,22 @@
 # Camera, audio, and haptics status (2026-07-17)
 
+## Live retest after `cc5ea43e`
+
+- Front S5K3H7 still fails chip-ID access with `-ENXIO`; CAMSS therefore does
+  not bind either sensor endpoint and the otherwise detected rear IMX363 has
+  no media link. The next image corrects the front VANA/VDIG upstream rail
+  model to match the factory `pm8998_s3` topology.
+- The input FF API accepted effects, but no physical vibration was felt. The
+  installed image incorrectly used buffer mode; factory `vibrator.dtsi` uses
+  direct mode and explicitly disables LRA auto resonance. The next image
+  restores those settings and extends the mainline driver accordingly.
+- The sound card and both TFA9912 codecs register. Enabling
+  `QUAT_MI2S_RX Audio Mixer MultiMedia1` starts and unmutes both codecs, but
+  playback stops when the Razer ADSP rejects `ASM_CMD_SHARED_MEM_MAP_REGIONS`
+  with status 1. PCM playback is therefore not complete; the next image logs
+  the exact mapped address and size for comparison with the factory audio ION
+  range `0x10000000..0x1fffffff`.
+
 ## Camera audit and live diagnosis
 
 Both preview paths are represented end to end in the source:

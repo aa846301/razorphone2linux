@@ -1,0 +1,94 @@
+diff --git a/Documentation/devicetree/bindings/input/qcom,spmi-haptics.yaml b/Documentation/devicetree/bindings/input/qcom,spmi-haptics.yaml
+index 3fcf24856d185..349b469172d62 100644
+--- a/Documentation/devicetree/bindings/input/qcom,spmi-haptics.yaml
++++ b/Documentation/devicetree/bindings/input/qcom,spmi-haptics.yaml
+@@ -78,6 +78,20 @@ properties:
+     minimum: 0
+     maximum: 20475
+ 
++  qcom,lra-auto-res-mode:
++    description: |
++      Selects the LRA automatic resonance mode.
++      Allowed values are,
++        0 - HAP_AUTO_RES_NONE
++        1 - HAP_AUTO_RES_ZXD
++        2 - HAP_AUTO_RES_QWD
++        3 - HAP_AUTO_RES_MAX_QWD
++        4 - HAP_AUTO_RES_ZXD_EOP
++    $ref: /schemas/types.yaml#/definitions/uint32
++    minimum: 0
++    maximum: 4
++    default: 4
++
+   qcom,vmax-mv:
+     description: Maximum drive voltage used at full rumble magnitude.
+     $ref: /schemas/types.yaml#/definitions/uint32
+diff --git a/drivers/input/misc/qcom-spmi-haptics.c b/drivers/input/misc/qcom-spmi-haptics.c
+index c2bcb1fca77b7..7d27a1b945547 100644
+--- a/drivers/input/misc/qcom-spmi-haptics.c
++++ b/drivers/input/misc/qcom-spmi-haptics.c
+@@ -184,6 +184,7 @@ struct spmi_haptics {
+ 	u8 actuator_type;
+ 	u8 wave_shape;
+ 	u8 play_mode;
++	u8 auto_res_mode;
+ 	int magnitude;
+ 	u32 vmax;
+ 	u32 vmax_max;
+@@ -362,6 +363,9 @@ static int spmi_haptics_set_auto_res(struct spmi_haptics *haptics, bool enable)
+ {
+ 	u8 val;
+ 
++	if (haptics->auto_res_mode == HAP_AUTO_RES_NONE)
++		enable = false;
++
+ 	// LRAs are the only type to support auto res
+ 	if (haptics->actuator_type != HAP_TYPE_LRA)
+ 		return 0;
+@@ -532,8 +536,9 @@ static int spmi_haptics_init(struct spmi_haptics *haptics)
+ 	 * This is greatly simplified.
+ 	 */
+ 	val = FIELD_PREP(LRA_RES_CAL_MASK, ilog2(32 / HAP_RES_CAL_PERIOD_MIN)) |
+-	      FIELD_PREP(LRA_AUTO_RES_MODE_MASK, HAP_AUTO_RES_ZXD_EOP) |
+-	      FIELD_PREP(LRA_HIGH_Z_MASK, 1);
++	      FIELD_PREP(LRA_AUTO_RES_MODE_MASK, haptics->auto_res_mode);
++	if (haptics->auto_res_mode != HAP_AUTO_RES_NONE)
++		val |= FIELD_PREP(LRA_HIGH_Z_MASK, 1);
+ 
+ 	mask = LRA_AUTO_RES_MODE_MASK | LRA_HIGH_Z_MASK | LRA_RES_CAL_MASK;
+ 
+@@ -829,11 +834,11 @@ static int spmi_haptics_probe(struct platform_device *pdev)
+ 		haptics->actuator_type = val;
+ 	}
+ 
+-	// Only buffer mode is currently supported
++	/* Direct mode is used by the Razer Phone 2 factory configuration. */
+ 	haptics->play_mode = HAP_PLAY_BUFFER;
+ 	ret = of_property_read_u32(node, "qcom,play-mode", &val);
+ 	if (!ret) {
+-		if (val != HAP_PLAY_BUFFER) {
++		if (val != HAP_PLAY_DIRECT && val != HAP_PLAY_BUFFER) {
+ 			dev_err(&pdev->dev, "qcom,play-mode (%d) isn't supported\n", val);
+ 			ret = -EINVAL;
+ 			goto register_fail;
+@@ -841,6 +846,20 @@ static int spmi_haptics_probe(struct platform_device *pdev)
+ 		haptics->play_mode = val;
+ 	}
+ 
++	haptics->auto_res_mode = HAP_AUTO_RES_ZXD_EOP;
++	ret = of_property_read_u32(node, "qcom,lra-auto-res-mode", &val);
++	if (!ret) {
++		if (val > HAP_AUTO_RES_ZXD_EOP) {
++			dev_err(&pdev->dev,
++				"qcom,lra-auto-res-mode is invalid: %d\n", val);
++			ret = -EINVAL;
++			goto register_fail;
++		}
++		haptics->auto_res_mode = val;
++	} else if (ret != -EINVAL) {
++		goto register_fail;
++	}
++
+ 	ret = of_property_read_u32(node, "qcom,wave-play-rate-us", &val);
+ 	if (!ret) {
+ 		haptics->play_wave_rate = val;

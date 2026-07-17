@@ -1,0 +1,15 @@
+diff --git a/sound/soc/qcom/qdsp6/q6asm.c b/sound/soc/qcom/qdsp6/q6asm.c
+index 9c4c1dbf6c92..868b34ac9d91 100644
+--- a/sound/soc/qcom/qdsp6/q6asm.c
++++ b/sound/soc/qcom/qdsp6/q6asm.c
+@@ -469,6 +469,10 @@ static int __q6asm_memory_map_regions(struct audio_client *ac, int dir,
+ 		++mregions;
+ 	}
+ 	spin_unlock_irqrestore(&ac->lock, flags);
++	dev_info(ac->dev,
++		 "map memory dir=%d addr=%pa size=%u regions=%u contiguous=%d\n",
++		 dir, &port->buf[0].phys, buf_sz, num_regions,
++		 is_contiguous);
+ 
+ 	return q6asm_apr_send_session_pkt(a, ac, pkt, ASM_CMDRSP_SHARED_MEM_MAP_REGIONS);
+ }

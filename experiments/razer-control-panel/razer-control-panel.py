@@ -15,6 +15,8 @@ FB = "/dev/fb0"
 INPUT = "/dev/input/event0"
 KMS_HELPER = "/usr/local/sbin/razer-kms-present"
 CAMERA_LAUNCHER = "/usr/local/sbin/razer-camera-launch"
+HAPTIC_TEST = "/usr/local/sbin/razer-haptic-test"
+AUDIO_TEST = "/usr/local/sbin/razer-audio-test"
 SHARED_FRAME = "/run/razer-control-panel.frame"
 MANUAL_CHARGE_MARKER = "/var/lib/razer-control-panel/charge-to-full"
 IDLE_SECONDS = int(os.environ.get("RAZER_PANEL_IDLE_SECONDS", "60"))
@@ -433,16 +435,18 @@ class ControlPanel:
             self.fb.text(110, y, label, 6, COLORS["muted"])
             self.fb.text(610, y, value, 5, COLORS["text"], max_chars=24)
             y += 90
-        self.add_button(70, 1570, 620, 180, "REAR CAMERA", ("camera", "rear"), "cyan", 7)
-        self.add_button(750, 1570, 620, 180, "FRONT CAMERA", ("camera", "front"), "cyan", 7)
+        self.add_button(70, 1570, 620, 160, "REAR CAMERA", ("camera", "rear"), "cyan", 7)
+        self.add_button(750, 1570, 620, 160, "FRONT CAMERA", ("camera", "front"), "cyan", 7)
+        self.add_button(70, 1750, 620, 160, "VIBRATE", "haptic", "amber", 8)
+        self.add_button(750, 1750, 620, 160, "SOUND", "audio", "amber", 8)
         charge_label = "USE 40-80 LIMIT" if self.manual_charge else "CHARGE TO 100%"
         charge_color = "amber" if self.manual_charge else "green"
-        self.add_button(70, 1780, 1300, 170, charge_label, "charge_toggle", charge_color, 7)
-        self.add_button(70, 1980, 620, 170, "WIFI", "wifi", "cyan", 8)
-        self.add_button(750, 1980, 620, 170, "REFRESH", "refresh", "panel2", 7)
-        self.add_button(70, 2180, 1300, 170, "SCREEN OFF", "screen_off", "panel2", 7)
+        self.add_button(70, 1930, 1300, 150, charge_label, "charge_toggle", charge_color, 7)
+        self.add_button(70, 2100, 620, 150, "WIFI", "wifi", "cyan", 8)
+        self.add_button(750, 2100, 620, 150, "REFRESH", "refresh", "panel2", 7)
+        self.add_button(70, 2270, 1300, 150, "SCREEN OFF", "screen_off", "panel2", 7)
         if self.message:
-            self.fb.text(self.fb.width // 2, 2410, self.message, 5,
+            self.fb.text(self.fb.width // 2, 2460, self.message, 5,
                          COLORS["amber"], center=True, max_chars=34)
 
     def draw_camera(self):
@@ -619,6 +623,29 @@ class ControlPanel:
             self.stop_camera()
             self.draw()
 
+    @staticmethod
+    def test_result(result, success, failure):
+        if result.returncode == 0:
+            return success
+        lines = [line.strip() for line in (result.stderr + "\n" + result.stdout).splitlines()
+                 if line.strip() and "password for" not in line]
+        detail = lines[-1] if lines else f"EXIT {result.returncode}"
+        return f"{failure}: {detail}"[-34:]
+
+    def test_haptic(self):
+        self.message = "VIBRATION TEST..."
+        self.draw()
+        result = run([HAPTIC_TEST], timeout=8)
+        self.message = self.test_result(result, "VIBRATION OK", "VIBRATION FAILED")
+        print(f"haptic result={result.returncode} message={self.message}", flush=True)
+
+    def test_audio(self):
+        self.message = "SOUND TEST..."
+        self.draw()
+        result = run([AUDIO_TEST], timeout=15)
+        self.message = self.test_result(result, "SOUND OK", "SOUND FAILED")
+        print(f"audio result={result.returncode} message={self.message}", flush=True)
+
     def action(self, action):
         self.last_touch = time.monotonic()
         if action == "wifi":
@@ -637,6 +664,10 @@ class ControlPanel:
             return
         elif action == "charge_toggle":
             self.set_manual_charge(not self.manual_charge)
+        elif action == "haptic":
+            self.test_haptic()
+        elif action == "audio":
+            self.test_audio()
         elif action == "delete":
             self.password = self.password[:-1]
         elif action == "clear":

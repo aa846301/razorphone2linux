@@ -3,8 +3,8 @@
 [English](README.md)
 
 這個面板用於 Razer Phone 2 Linux 實機 bring-up，可在觸控螢幕上查看 USB
-輸入、電池與充電狀態、設定 WiFi、暫時充到 100%，以及切換前後鏡頭的
-1920×1080 RAW10 預覽。
+輸入、電池與充電狀態、設定 WiFi、暫時充到 100%，切換前後鏡頭的
+1920×1080 RAW10 預覽，以及直接執行震動與喇叭測試。
 
 它是手動部署的實驗工具，不會放進正常 rootfs 或 GitHub Actions release。
 每次重刷 userdata/rootfs 後都要重新部署。
@@ -104,7 +104,8 @@ powershell -ExecutionPolicy Bypass -File experiments\razer-control-panel\deploy.
 2. 測試 SSH key 登入；需要時用密碼安裝 public key。
 3. 以 `scp` 複製控制面板、service 與 helpers 到手機 `/tmp`。
 4. 安裝檔案到 `/usr/local/sbin` 與 `/etc/systemd/system`。
-5. 若缺少 `media-ctl` 或 `v4l2-ctl`，在手機安裝 `v4l-utils`。
+5. 若缺少相機、震動或聲音測試工具，在手機安裝 `v4l-utils`、`joystick`
+   與 `alsa-utils`。
 6. 停用 `razer-panel-idle-blank.service` 與 `getty@tty1.service`。
 7. 啟用並重新啟動 `razer-control-panel.service`。
 
@@ -151,18 +152,37 @@ dmesg | grep -Ei 'imx363|s5k3h7|camss|csiphy|csid|vfe'
 目前這只驗證預覽 bring-up，不代表拍照、錄影、AE/AWB/AF、OIS 或完整相機
 framework 已完成。
 
-## 6. 已部署的檔案
+## 6. 測試震動與聲音
+
+主畫面的 `VIBRATE` 會透過 `spmi_haptics` 的 force-feedback 介面執行約一秒
+的強震動；`SOUND` 會在第一個 ALSA playback PCM 播放一次 440 Hz 雙聲道
+測試音。成功時面板底部會顯示 `VIBRATION OK` 或 `SOUND OK`，失敗時會顯示
+最後一行錯誤。
+
+可由 SSH 執行相同測試並查看完整輸出：
+
+```bash
+sudo /usr/local/sbin/razer-haptic-test
+sudo /usr/local/sbin/razer-audio-test
+```
+
+聲卡或 codec 出現在 `aplay -l`／`dmesg` 只代表枚舉成功；仍須以實際聽到
+測試音確認 playback route、PCM 格式與兩顆喇叭工作。
+
+## 7. 已部署的檔案
 
 ```text
 /usr/local/sbin/razer-control-panel
 /usr/local/sbin/razer-kms-present
 /usr/local/sbin/razer-camera-preview
 /usr/local/sbin/razer-camera-launch
+/usr/local/sbin/razer-haptic-test
+/usr/local/sbin/razer-audio-test
 /usr/local/sbin/razer-shutdown-console
 /etc/systemd/system/razer-control-panel.service
 ```
 
-## 7. 移除測試面板
+## 8. 移除測試面板
 
 使用與部署時相同的 IP、帳號、key 與密碼參數。例如預設 USB NCM：
 
