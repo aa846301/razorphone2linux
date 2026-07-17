@@ -25,6 +25,8 @@ The deployed files on the phone are:
 ```text
 /usr/local/sbin/razer-control-panel
 /usr/local/sbin/razer-kms-present
+/usr/local/sbin/razer-camera-preview
+/usr/local/sbin/razer-camera-launch
 /usr/local/sbin/razer-shutdown-console
 /etc/systemd/system/razer-control-panel.service
 ```
@@ -38,6 +40,17 @@ sudo systemctl restart razer-control-panel.service
 
 Because this experiment is not part of `rootfs.img`, rerun `deploy.ps1` after
 every userdata/rootfs flash.
+
+The rear/front camera buttons configure the qcom-camss media graph for a
+1920x1080 RAW10 stream, start a small V4L2 preview helper, and return to the
+dashboard with the `BACK` button. The helper performs `STREAMOFF`, unmaps all
+capture buffers, and closes the video node on exit. `deploy.ps1` installs the
+`v4l-utils` package when `media-ctl` is not already present.
+
+If a camera cannot start, the dashboard shows the last launcher error. The
+complete launcher output remains available until the next attempt at
+`/run/razer-camera-preview.log`; kernel probe details are in `dmesg` under
+`imx363`, `s5k3h7`, or `camss`.
 
 The dashboard reads the PMI8998 RRADC `usbin_v` and `usbin_i` channels for
 actual external-input voltage, current, and power. It separately reads the

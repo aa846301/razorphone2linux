@@ -295,6 +295,70 @@
 		regulator-boot-on;
 		regulator-always-on;
 	};
+
+	/* Rear wide-camera I/O rail from the factory RC2 camera topology. */
+	wide_camera_iovdd: wide-camera-iovdd-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "wide_camera_iovdd";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		regulator-enable-ramp-delay = <233>;
+		vin-supply = <&vreg_lvs1a_1p8>;
+		gpio = <&pm8998_gpios 11 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	wide_camera_vana: wide-camera-vana-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "wide_camera_vana";
+		regulator-min-microvolt = <3312000>;
+		regulator-max-microvolt = <3312000>;
+		vin-supply = <&vreg_bob>;
+		gpio = <&pm8998_gpios 12 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	wide_camera_vdig: wide-camera-vdig-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "wide_camera_vdig";
+		regulator-min-microvolt = <1352000>;
+		regulator-max-microvolt = <1352000>;
+		vin-supply = <&vreg_s3a_1p35>;
+		gpio = <&pm8998_gpios 10 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	/* Chicony S5K3H7 front-camera rails from the factory RC2 topology. */
+	front_camera_iovdd: front-camera-iovdd-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "front_camera_iovdd";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		regulator-enable-ramp-delay = <233>;
+		vin-supply = <&vreg_lvs1a_1p8>;
+		gpio = <&pm8998_gpios 8 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	front_camera_vana: front-camera-vana-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "front_camera_vana";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		vin-supply = <&vph_pwr>;
+		gpio = <&pm8998_gpios 7 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	front_camera_vdig: front-camera-vdig-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "front_camera_vdig";
+		regulator-min-microvolt = <1050000>;
+		regulator-max-microvolt = <1050000>;
+		vin-supply = <&vph_pwr>;
+		gpio = <&pm8998_gpios 4 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
 };
 
 /*
@@ -330,6 +394,110 @@
 &cdsp_pas {
 	firmware-name = "qcom/sdm845/Razer/aura/cdsp.mbn";
 	status = "okay";
+};
+
+/*
+ * Factory rear-wide topology: Lite-On IMX363, CCI0, CSIPHY0, MCLK0 on
+ * GPIO13, reset on GPIO80. Autofocus and OIS are not needed for preview.
+ */
+&cci {
+	status = "okay";
+};
+
+&cci_i2c0 {
+	status = "okay";
+
+	rear_wide_camera: camera@10 {
+		compatible = "sony,imx363";
+		reg = <0x10>;
+		clocks = <&clock_camcc CAM_CC_MCLK0_CLK>;
+		assigned-clocks = <&clock_camcc CAM_CC_MCLK0_CLK>;
+		assigned-clock-rates = <24000000>;
+		clock-frequency = <24000000>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&rear_camera_default>;
+		reset-gpios = <&tlmm 80 GPIO_ACTIVE_LOW>;
+		vif-supply = <&wide_camera_iovdd>;
+		vana-supply = <&wide_camera_vana>;
+		vdig-supply = <&wide_camera_vdig>;
+		orientation = <1>;
+		rotation = <90>;
+
+		port {
+			rear_imx363_ep: endpoint {
+				bus-type = <4>;
+				clock-lanes = <1>;
+				data-lanes = <1 2 3 4>;
+				link-frequencies = /bits/ 64 <636000000 321000000>;
+				remote-endpoint = <&camss_csiphy0_ep>;
+			};
+		};
+	};
+};
+
+&cci_i2c1 {
+	status = "okay";
+
+	front_camera: camera@10 {
+		compatible = "samsung,s5k3h7";
+		reg = <0x10>;
+		clocks = <&clock_camcc CAM_CC_MCLK2_CLK>;
+		assigned-clocks = <&clock_camcc CAM_CC_MCLK2_CLK>;
+		assigned-clock-rates = <24000000>;
+		clock-frequency = <24000000>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&front_camera_default>;
+		reset-gpios = <&tlmm 9 GPIO_ACTIVE_LOW>;
+		vdda-supply = <&front_camera_vana>;
+		vddd-supply = <&front_camera_vdig>;
+		vddio-supply = <&front_camera_iovdd>;
+		orientation = <0>;
+		rotation = <90>;
+
+		port {
+			front_s5k3h7_ep: endpoint {
+				bus-type = <4>;
+				clock-lanes = <1>;
+				data-lanes = <1 2 3 4>;
+				link-frequencies = /bits/ 64 <330000000>;
+				remote-endpoint = <&camss_csiphy2_ep>;
+			};
+		};
+	};
+};
+
+&camss {
+	vdda-phy-supply = <&vdda_mipi_dsi0_pll>;
+	vdda-pll-supply = <&vdda_mipi_dsi0_1p2>;
+	vdda-csi0-supply = <&vdda_mipi_dsi0_pll>;
+	vdda-csi1-supply = <&vdda_mipi_dsi0_pll>;
+	vdda-csi2-supply = <&vdda_mipi_dsi0_pll>;
+	status = "okay";
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			camss_csiphy0_ep: endpoint {
+				bus-type = <4>;
+				clock-lanes = <7>;
+				data-lanes = <0 1 2 3>;
+				remote-endpoint = <&rear_imx363_ep>;
+			};
+		};
+
+		port@2 {
+			reg = <2>;
+			camss_csiphy2_ep: endpoint {
+				bus-type = <4>;
+				clock-lanes = <7>;
+				data-lanes = <0 1 2 3>;
+				remote-endpoint = <&front_s5k3h7_ep>;
+			};
+		};
+	};
 };
 
 /*
@@ -492,6 +660,12 @@
 			regulator-min-microvolt = <2856000>;
 			regulator-max-microvolt = <3008000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/* Factory camera I/O rail: PM8998 LVS1 fed from S4. */
+		vreg_lvs1a_1p8: lvs1 {
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
 		};
 	};
 
@@ -1312,6 +1486,38 @@
 		function = "gpio";
 		drive-strength = <16>;
 		bias-pull-up;
+	};
+
+	rear_camera_default: rear-camera-default-state {
+		mclk-pins {
+			pins = "gpio13";
+			function = "cam_mclk";
+			drive-strength = <2>;
+			bias-disable;
+		};
+
+		reset-pins {
+			pins = "gpio80";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
+	front_camera_default: front-camera-default-state {
+		mclk-pins {
+			pins = "gpio15";
+			function = "cam_mclk";
+			drive-strength = <2>;
+			bias-disable;
+		};
+
+		reset-pins {
+			pins = "gpio9";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
 	};
 };
 

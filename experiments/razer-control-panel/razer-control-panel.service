@@ -1,5 +1,5 @@
 [Unit]
-Description=Experimental Razer Phone 2 charging and WiFi touch panel
+Description=Experimental Razer Phone 2 charging, WiFi and camera touch panel
 After=NetworkManager.service systemd-udev-settle.service
 Wants=NetworkManager.service
 ConditionPathExists=/dev/fb0

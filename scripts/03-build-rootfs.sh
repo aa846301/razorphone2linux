@@ -354,6 +354,7 @@ apt install -y \
     dbus \
     usbutils pciutils \
     evtest \
+	v4l-utils \
     htop \
     ca-certificates \
     gnupg \

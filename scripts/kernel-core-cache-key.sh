@@ -26,14 +26,19 @@ SOURCE_TREE_ID="$({
     printf 'native_panel_builtin=%s\n' "${RAZER_DISPLAY_NATIVE_PANEL_BUILTIN:-0}"
     printf 'early_debug_log=%s\n' "${RAZER_EARLY_DEBUG_LOG:-0}"
 
-    while IFS= read -r -d '' file; do
+    for file in \
+        config/kernel-source.env \
+        config/razer-aura.config \
+        panel-driver/panel-novatek-nt36830.c; do
         sha256sum "$PROJECT_DIR/$file"
+    done
+
+    # Hash the working-tree patch inputs, including newly created patches
+    # that have not been staged yet during local bring-up.
+    while IFS= read -r -d '' file; do
+        sha256sum "$file"
     done < <(
-        git -C "$PROJECT_DIR" ls-files -z -- \
-            config/kernel-source.env \
-            config/razer-aura.config \
-            ':(glob)kernel-patches/*.patch' \
-            panel-driver/panel-novatek-nt36830.c |
-            sort -z
+        find "$PROJECT_DIR/kernel-patches" -maxdepth 1 -type f \
+            -name '*.patch' -print0 | sort -z
     )
 } | sha256sum | cut -d' ' -f1

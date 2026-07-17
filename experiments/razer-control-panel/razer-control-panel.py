@@ -5,6 +5,7 @@ import glob
 import mmap
 import os
 import select
+import signal
 import struct
 import subprocess
 import time
@@ -13,6 +14,7 @@ import time
 FB = "/dev/fb0"
 INPUT = "/dev/input/event0"
 KMS_HELPER = "/usr/local/sbin/razer-kms-present"
+CAMERA_LAUNCHER = "/usr/local/sbin/razer-camera-launch"
 SHARED_FRAME = "/run/razer-control-panel.frame"
 MANUAL_CHARGE_MARKER = "/var/lib/razer-control-panel/charge-to-full"
 IDLE_SECONDS = int(os.environ.get("RAZER_PANEL_IDLE_SECONDS", "60"))
@@ -241,6 +243,9 @@ class ControlPanel:
         self.touch_down = False
         self.suppress_click = False
         self.manual_charge = os.path.exists(MANUAL_CHARGE_MARKER)
+        self.camera_process = None
+        self.camera_log = None
+        self.camera_name = ""
         self.input_fd = os.open(INPUT, os.O_RDONLY | os.O_NONBLOCK)
         if self.manual_charge:
             self.apply_manual_charge()
@@ -428,15 +433,23 @@ class ControlPanel:
             self.fb.text(110, y, label, 6, COLORS["muted"])
             self.fb.text(610, y, value, 5, COLORS["text"], max_chars=24)
             y += 90
+        self.add_button(70, 1570, 620, 180, "REAR CAMERA", ("camera", "rear"), "cyan", 7)
+        self.add_button(750, 1570, 620, 180, "FRONT CAMERA", ("camera", "front"), "cyan", 7)
         charge_label = "USE 40-80 LIMIT" if self.manual_charge else "CHARGE TO 100%"
         charge_color = "amber" if self.manual_charge else "green"
-        self.add_button(70, 1620, 1300, 180, charge_label, "charge_toggle", charge_color, 8)
-        self.add_button(70, 1850, 620, 200, "WIFI", "wifi", "cyan", 9)
-        self.add_button(750, 1850, 620, 200, "REFRESH", "refresh", "panel2", 7)
-        self.add_button(70, 2100, 1300, 200, "SCREEN OFF", "screen_off", "panel2", 8)
+        self.add_button(70, 1780, 1300, 170, charge_label, "charge_toggle", charge_color, 7)
+        self.add_button(70, 1980, 620, 170, "WIFI", "wifi", "cyan", 8)
+        self.add_button(750, 1980, 620, 170, "REFRESH", "refresh", "panel2", 7)
+        self.add_button(70, 2180, 1300, 170, "SCREEN OFF", "screen_off", "panel2", 7)
         if self.message:
-            self.fb.text(self.fb.width // 2, 2380, self.message, 5,
+            self.fb.text(self.fb.width // 2, 2410, self.message, 5,
                          COLORS["amber"], center=True, max_chars=34)
+
+    def draw_camera(self):
+        self.draw_header(f"{self.camera_name} CAMERA")
+        self.add_button(1050, 45, 320, 120, "BACK", "dashboard", "red", 6)
+        self.fb.text(self.fb.width // 2, 1210, "STARTING CAMERA", 7,
+                     COLORS["muted"], center=True)
 
     @staticmethod
     def split_nmcli(line):
@@ -538,6 +551,8 @@ class ControlPanel:
             self.draw_dashboard()
         elif self.page == "wifi":
             self.draw_wifi()
+        elif self.page == "camera":
+            self.draw_camera()
         else:
             self.draw_keyboard()
         self.fb.present()
@@ -560,12 +575,57 @@ class ControlPanel:
             self.message = (result.stderr.strip() or "CONNECTION FAILED")[-30:]
         self.draw()
 
+    def camera_error(self):
+        if not self.camera_log:
+            return "CAMERA FAILED"
+        self.camera_log.flush()
+        self.camera_log.seek(0)
+        lines = [line.strip() for line in self.camera_log.readlines() if line.strip()]
+        return (lines[-1] if lines else "CAMERA FAILED")[-34:]
+
+    def stop_camera(self):
+        process = self.camera_process
+        self.camera_process = None
+        if process and process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=3)
+            except (ProcessLookupError, subprocess.TimeoutExpired):
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait()
+        if self.camera_log:
+            self.camera_log.close()
+            self.camera_log = None
+
+    def open_camera(self, camera):
+        self.stop_camera()
+        self.camera_name = camera.upper()
+        self.page = "camera"
+        self.message = ""
+        self.draw()
+        self.camera_log = open("/run/razer-camera-preview.log", "w+", encoding="utf-8")
+        try:
+            self.camera_process = subprocess.Popen(
+                [CAMERA_LAUNCHER, camera, SHARED_FRAME,
+                 str(self.fb.width), str(self.fb.height)],
+                stdout=self.camera_log, stderr=self.camera_log,
+                start_new_session=True)
+        except OSError as exc:
+            self.message = str(exc)[-34:]
+            self.page = "dashboard"
+            self.stop_camera()
+            self.draw()
+
     def action(self, action):
         self.last_touch = time.monotonic()
         if action == "wifi":
             self.page = "wifi"
             self.scan_wifi()
         elif action == "dashboard":
+            self.stop_camera()
             self.page = "dashboard"
             self.message = ""
         elif action in ("refresh", "scan"):
@@ -585,6 +645,9 @@ class ControlPanel:
             self.key_mode = {"ABC": "abc", "abc": "SYM", "SYM": "ABC"}[self.key_mode]
         elif action == "connect":
             self.connect_wifi()
+            return
+        elif isinstance(action, tuple) and action[0] == "camera":
+            self.open_camera(action[1])
             return
         elif isinstance(action, tuple) and action[0] == "network":
             self.selected_ssid, _, self.selected_security = self.networks[action[1]]
@@ -656,12 +719,18 @@ class ControlPanel:
                 self.process_input()
             now = time.monotonic()
             self.update_manual_charge()
-            if self.screen_on and now - self.last_touch >= IDLE_SECONDS:
+            if self.camera_process and self.camera_process.poll() is not None:
+                self.message = self.camera_error()
+                self.stop_camera()
+                self.page = "dashboard"
+                self.draw()
+            if self.screen_on and self.page != "camera" and now - self.last_touch >= IDLE_SECONDS:
                 self.set_screen(False)
             elif self.screen_on and self.page == "dashboard" and now - self.last_refresh >= 2:
                 self.draw()
 
     def close(self):
+        self.stop_camera()
         os.close(self.input_fd)
         self.fb.close()
 
