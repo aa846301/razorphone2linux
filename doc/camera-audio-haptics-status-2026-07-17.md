@@ -1,5 +1,30 @@
 # Camera, audio, and haptics status (2026-07-17)
 
+## Rear RAW10 capture follow-up (2026-07-18)
+
+- The control panel now has a `CAPTURE` action during camera preview. The next
+  complete V4L2 frame is saved as a full-resolution BMP, the unchanged packed
+  RAW10 buffer, and a metadata text file under
+  `/var/lib/razer-control-panel/captures/`.
+- A live 1920x1080 rear capture was successfully saved and retrieved. Its centre
+  crop has a strong four-column colour phase: mean adjacent-column RGB
+  difference is about 7 levels, while columns four pixels apart differ by less
+  than 0.8 level. This is objective four-pixel periodicity, not a subjective
+  preview report.
+- The userspace decoder matches Linux's documented `pBAA`/packed Bayer RAW10
+  layout: four high-byte samples followed by their four low two-bit fields.
+  The retrieved 2,592,000-byte RAW10 itself also contains the phase: in the
+  central crop, nominally same-colour samples two columns apart differ by about
+  47 raw levels on average, but samples in the same four-column phase differ by
+  about 13.7. The phase is already present in the high eight sample bits, so BMP
+  demosaic and low-two-bit extraction cannot be its cause.
+- No speculative byte-order change is made. The current IMX363 driver comes from
+  the sdm845-mainline commit `a6f70df2c534` rather than upstream Linux and its
+  source explicitly labels link frequencies as uncertain and leaves downstream
+  sensor registers disabled. The next production change requires Razer's stock
+  IMX363 CamX mode table or a hardware CSI lane/clock trace to distinguish sensor
+  configuration from CAMSS delivery.
+
 ## Follow-up live audit of `v1.0.18` (2026-07-18)
 
 - Front S5K3H7 still fails before media registration. Debugfs proves CCI1 SDA

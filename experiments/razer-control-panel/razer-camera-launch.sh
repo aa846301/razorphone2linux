@@ -62,4 +62,4 @@ if [ "$camera" = rear ] && command -v v4l2-ctl >/dev/null 2>&1; then
 		"exposure=1286,analogue_gain=${RAZER_REAR_ANALOGUE_GAIN:-160},digital_gain=1024"
 fi
 
-exec /usr/local/sbin/razer-camera-preview "$video" "$shared" "$width" "$height" "$bayer" "$mirror" "$fourcc"
+exec /usr/local/sbin/razer-camera-preview "$video" "$shared" "$width" "$height" "$bayer" "$mirror" "$fourcc" "$camera"

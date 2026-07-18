@@ -18,6 +18,7 @@ CAMERA_LAUNCHER = "/usr/local/sbin/razer-camera-launch"
 HAPTIC_TEST = "/usr/local/sbin/razer-haptic-test"
 AUDIO_TEST = "/usr/local/sbin/razer-audio-test"
 SHARED_FRAME = "/run/razer-control-panel.frame"
+CAMERA_CAPTURE_STATUS = "/run/razer-camera-capture.last"
 MANUAL_CHARGE_MARKER = "/var/lib/razer-control-panel/charge-to-full"
 IDLE_SECONDS = int(os.environ.get("RAZER_PANEL_IDLE_SECONDS", "60"))
 EVENT = struct.Struct("llHHi")
@@ -248,6 +249,7 @@ class ControlPanel:
         self.camera_process = None
         self.camera_log = None
         self.camera_name = ""
+        self.camera_capture_pending = 0.0
         self.input_fd = os.open(INPUT, os.O_RDONLY | os.O_NONBLOCK)
         if self.manual_charge:
             self.apply_manual_charge()
@@ -450,10 +452,12 @@ class ControlPanel:
                          COLORS["amber"], center=True, max_chars=34)
 
     def draw_camera(self):
-        self.draw_header(f"{self.camera_name} CAMERA")
+        self.draw_header(self.camera_name)
+        self.add_button(520, 45, 480, 120, "CAPTURE", "capture", "green", 6)
         self.add_button(1050, 45, 320, 120, "BACK", "dashboard", "red", 6)
-        self.fb.text(self.fb.width // 2, 1210, "STARTING CAMERA", 7,
-                     COLORS["muted"], center=True)
+        if self.message:
+            self.fb.text(self.fb.width // 2, 174, self.message, 4,
+                         COLORS["amber"], center=True, max_chars=38)
 
     @staticmethod
     def split_nmcli(line):
@@ -590,6 +594,7 @@ class ControlPanel:
     def stop_camera(self):
         process = self.camera_process
         self.camera_process = None
+        self.camera_capture_pending = 0.0
         if process and process.poll() is None:
             try:
                 os.killpg(process.pid, signal.SIGTERM)
@@ -609,6 +614,10 @@ class ControlPanel:
         self.camera_name = camera.upper()
         self.page = "camera"
         self.message = ""
+        try:
+            os.unlink(CAMERA_CAPTURE_STATUS)
+        except OSError:
+            pass
         self.draw()
         self.camera_log = open("/run/razer-camera-preview.log", "w+", encoding="utf-8")
         try:
@@ -622,6 +631,45 @@ class ControlPanel:
             self.page = "dashboard"
             self.stop_camera()
             self.draw()
+
+    def capture_camera(self):
+        if not self.camera_process or self.camera_process.poll() is not None:
+            self.message = "CAMERA IS NOT RUNNING"
+            self.draw()
+            return
+        try:
+            os.unlink(CAMERA_CAPTURE_STATUS)
+        except OSError:
+            pass
+        try:
+            os.kill(self.camera_process.pid, signal.SIGUSR1)
+        except ProcessLookupError:
+            self.message = "CAMERA STOPPED"
+            self.draw()
+            return
+        self.camera_capture_pending = time.monotonic()
+        self.message = "CAPTURING RAW10 AND BMP"
+        print(f"camera={self.camera_name.lower()} capture requested", flush=True)
+        self.draw()
+
+    def update_camera_capture(self, now):
+        if not self.camera_capture_pending:
+            return
+        try:
+            with open(CAMERA_CAPTURE_STATUS, "r", encoding="utf-8") as handle:
+                lines = [line.strip() for line in handle if line.strip()]
+        except OSError:
+            if now - self.camera_capture_pending <= 30:
+                return
+            lines = ["error=capture timeout"]
+        self.camera_capture_pending = 0.0
+        if lines and lines[0] == "ok":
+            self.message = "CAPTURE SAVED"
+        else:
+            detail = lines[-1].split("=", 1)[-1] if lines else "unknown error"
+            self.message = f"CAPTURE FAILED {detail}"[-38:]
+        print(f"camera capture status: {'; '.join(lines)}", flush=True)
+        self.draw()
 
     @staticmethod
     def test_result(result, success, failure):
@@ -643,7 +691,7 @@ class ControlPanel:
         self.message = "SOUND TEST..."
         self.draw()
         result = run([AUDIO_TEST], timeout=15)
-        self.message = self.test_result(result, "SOUND OK", "SOUND FAILED")
+        self.message = self.test_result(result, "CHECK PHONE SPEAKERS", "SOUND FAILED")
         print(f"audio result={result.returncode} message={self.message}", flush=True)
 
     def action(self, action):
@@ -668,6 +716,9 @@ class ControlPanel:
             self.test_haptic()
         elif action == "audio":
             self.test_audio()
+        elif action == "capture":
+            self.capture_camera()
+            return
         elif action == "delete":
             self.password = self.password[:-1]
         elif action == "clear":
@@ -750,6 +801,7 @@ class ControlPanel:
                 self.process_input()
             now = time.monotonic()
             self.update_manual_charge()
+            self.update_camera_capture(now)
             if self.camera_process and self.camera_process.poll() is not None:
                 self.message = self.camera_error()
                 self.stop_camera()

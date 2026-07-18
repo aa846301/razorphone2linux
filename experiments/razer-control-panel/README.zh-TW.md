@@ -4,7 +4,7 @@
 
 這個面板用於 Razer Phone 2 Linux 實機 bring-up，可在觸控螢幕上查看 USB
 輸入、電池與充電狀態、設定 WiFi、暫時充到 100%，切換前後鏡頭的
-1920×1080 RAW10 預覽，以及直接執行震動與喇叭測試。
+1920×1080 RAW10 預覽、保存相機診斷照片，以及直接執行震動與喇叭測試。
 
 它是手動部署的實驗工具，不會放進正常 rootfs 或 GitHub Actions release。
 每次重刷 userdata/rootfs 後都要重新部署。
@@ -146,6 +146,32 @@ dmesg | grep -Ei 'drm|dsi|panel|touch|input'
 面板上的 `REAR CAMERA` 與 `FRONT CAMERA` 會重新設定 qcom-camss media
 graph，啟動 1920×1080 RAW10 預覽；按 `BACK` 會停止串流並回到主畫面。
 
+預覽啟動後，按畫面上的 `CAPTURE`。面板會在下一個完整 frame 同時保存：
+
+- `*.bmp`：已轉成可直接查看與傳送的全解析度影像。
+- `*.raw10`：V4L2 提供的原始 packed RAW10 frame，用來檢查 Bayer 排列、
+  stride、CSI lane 或每四個像素的 packing 問題。
+- `*.txt`：鏡頭、解析度、fourcc、時間與實際 frame byte 數。
+
+設備端檔案位於：
+
+```text
+/var/lib/razer-control-panel/captures/
+```
+
+按下後若顯示 `CAPTURE SAVED`，可從 repository 根目錄把三種檔案取回：
+
+```powershell
+New-Item -ItemType Directory -Force .\camera-captures | Out-Null
+scp -i $env:USERPROFILE\.ssh\id_ed25519 `
+  klipper@192.168.137.133:/var/lib/razer-control-panel/captures/* `
+  .\camera-captures\
+```
+
+請保留同一個檔名前綴的 BMP、RAW10 與 TXT。回報條紋時先傳 BMP；需要確認
+driver 宣告的 `pBAA` 是否和實際資料一致時，再一起提供 RAW10 與 TXT。每次
+按 `CAPTURE` 都會建立新檔，不會覆蓋舊照片。
+
 若預覽失敗，查看完整 launcher log 與 kernel log：
 
 ```bash
@@ -163,8 +189,8 @@ framework 已完成。
 的強震動；`SOUND` 會在第一個 ALSA playback PCM 播放一次 440 Hz 雙聲道
 測試音。震動 helper 會直接送出 100% gain、最大 magnitude 的 `FF_RUMBLE`，
 成功時顯示 `CHECK PHONE VIBRATION`；這只證明核心接受完整的兩秒命令，仍要
-用手確認 LRA 真的震動。聲音成功時顯示 `SOUND OK`，失敗時會顯示最後一行
-錯誤。
+用手確認 LRA 真的震動。聲音命令成功時顯示 `CHECK PHONE SPEAKERS`，失敗時
+會顯示最後一行錯誤；ALSA 命令 exit 0 不等於功放真的有收到時鐘或已發聲。
 
 可由 SSH 執行相同測試並查看完整輸出：
 

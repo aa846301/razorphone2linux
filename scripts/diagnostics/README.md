@@ -43,3 +43,16 @@ matching kernel/rootfs image is installed:
 `phone-front-camera-state.sh` captures the live CCI1, GPIO9/GPIO15,
 regulator, and S5K3H7 probe state. Run it as root on the phone after a failed
 front-camera probe so the failure can be separated from the control panel.
+
+`phone-panel-trigger-state.sh` captures the root-visible panel journal, camera
+helper log, media graph, ALSA PCM/mixer state, and related kernel messages after
+the camera or sound test button has been pressed.
+
+`phone-front-camera-reprobe-trace.sh` retriggers the S5K3H7 probe and records
+front-camera regulator, reset GPIO, and MCLK trace events.
+
+`phone-audio-playback-state.sh` captures PCM, QUAT MI2S pin mux, ASoC DAPM,
+and TFA9912 kernel state while a stereo test tone is playing.
+
+`phone-audio-format-probe.sh` compares live TFA9912 status and interface
+registers while 16-, 24-, and 32-bit stereo tones are requested.

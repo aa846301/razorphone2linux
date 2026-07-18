@@ -12,13 +12,17 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #define BUFFER_COUNT 4
 #define HEADER_HEIGHT 210
 #define PREVIEW_BLOCK 4
+#define CAPTURE_DIRECTORY "/var/lib/razer-control-panel/captures"
+#define CAPTURE_STATUS "/run/razer-camera-capture.last"
 
 static volatile sig_atomic_t running = 1;
+static volatile sig_atomic_t capture_requested;
 
 struct buffer {
 	void *data;
@@ -29,6 +33,12 @@ static void stop_running(int signal_number)
 {
 	(void)signal_number;
 	running = 0;
+}
+
+static void request_capture(int signal_number)
+{
+	(void)signal_number;
+	capture_requested = 1;
 }
 
 static int xioctl(int fd, unsigned long request, void *argument)
@@ -143,6 +153,149 @@ static uint32_t debayer(const uint8_t *raw, unsigned int stride,
 	return (uint32_t)to_u8(r) << 16 | (uint32_t)to_u8(g) << 8 | to_u8(b);
 }
 
+static void put_le16(uint8_t *destination, uint16_t value)
+{
+	destination[0] = value;
+	destination[1] = value >> 8;
+}
+
+static void put_le32(uint8_t *destination, uint32_t value)
+{
+	destination[0] = value;
+	destination[1] = value >> 8;
+	destination[2] = value >> 16;
+	destination[3] = value >> 24;
+}
+
+static int write_raw(const char *path, const uint8_t *raw, size_t length)
+{
+	FILE *file = fopen(path, "wb");
+	int result;
+
+	if (!file)
+		return -1;
+	result = fwrite(raw, 1, length, file) == length ? 0 : -1;
+	if (fclose(file) != 0)
+		result = -1;
+	return result;
+}
+
+static int write_bmp(const char *path, const uint8_t *raw, unsigned int stride,
+		     unsigned int width, unsigned int height,
+		     enum bayer_pattern pattern)
+{
+	unsigned int row_stride = (width * 3 + 3) & ~3U;
+	uint32_t image_size = row_stride * height;
+	uint8_t header[54] = { 'B', 'M' };
+	uint8_t *row = calloc(1, row_stride);
+	FILE *file;
+	unsigned int x, y;
+	int result = 0;
+
+	if (!row)
+		return -1;
+	file = fopen(path, "wb");
+	if (!file) {
+		free(row);
+		return -1;
+	}
+	put_le32(header + 2, sizeof(header) + image_size);
+	put_le32(header + 10, sizeof(header));
+	put_le32(header + 14, 40);
+	put_le32(header + 18, width);
+	/* A negative DIB height stores the image top-down. */
+	put_le32(header + 22, (uint32_t)(int32_t)-height);
+	put_le16(header + 26, 1);
+	put_le16(header + 28, 24);
+	put_le32(header + 34, image_size);
+	if (fwrite(header, 1, sizeof(header), file) != sizeof(header))
+		result = -1;
+	for (y = 0; !result && y < height; y++) {
+		memset(row, 0, row_stride);
+		for (x = 0; x < width; x++) {
+			uint32_t color = debayer(raw, stride, width, height, x, y, pattern);
+
+			row[x * 3] = color;
+			row[x * 3 + 1] = color >> 8;
+			row[x * 3 + 2] = color >> 16;
+		}
+		if (fwrite(row, 1, row_stride, file) != row_stride)
+			result = -1;
+	}
+	free(row);
+	if (fclose(file) != 0)
+		result = -1;
+	return result;
+}
+
+static void write_capture_error(void)
+{
+	int saved_errno = errno;
+	FILE *status = fopen(CAPTURE_STATUS ".tmp", "w");
+
+	if (!status)
+		return;
+	fprintf(status, "error=%s\n", strerror(saved_errno));
+	if (fclose(status) == 0)
+		rename(CAPTURE_STATUS ".tmp", CAPTURE_STATUS);
+}
+
+static int save_capture(const char *camera, const char *bayer, const char *fourcc,
+			const uint8_t *raw, size_t raw_length, unsigned int stride,
+			unsigned int width, unsigned int height,
+			enum bayer_pattern pattern)
+{
+	struct timespec now;
+	struct tm local;
+	char timestamp[32], base[256], raw_path[320], bmp_path[320], meta_path[320];
+	FILE *meta, *status;
+
+	if ((mkdir("/var/lib/razer-control-panel", 0755) < 0 && errno != EEXIST) ||
+	    (mkdir(CAPTURE_DIRECTORY, 0755) < 0 && errno != EEXIST)) {
+		write_capture_error();
+		return -1;
+	}
+	clock_gettime(CLOCK_REALTIME, &now);
+	localtime_r(&now.tv_sec, &local);
+	strftime(timestamp, sizeof(timestamp), "%Y%m%d-%H%M%S", &local);
+	snprintf(base, sizeof(base), "%s/%s-%s-%03ld", CAPTURE_DIRECTORY,
+		 camera, timestamp, now.tv_nsec / 1000000);
+	snprintf(raw_path, sizeof(raw_path), "%s.raw10", base);
+	snprintf(bmp_path, sizeof(bmp_path), "%s.bmp", base);
+	snprintf(meta_path, sizeof(meta_path), "%s.txt", base);
+
+	if (write_raw(raw_path, raw, raw_length) < 0 ||
+	    write_bmp(bmp_path, raw, stride, width, height, pattern) < 0) {
+		write_capture_error();
+		return -1;
+	}
+	meta = fopen(meta_path, "w");
+	if (!meta) {
+		write_capture_error();
+		return -1;
+	}
+	fprintf(meta, "camera=%s\nwidth=%u\nheight=%u\nbytesperline=%u\n"
+		"fourcc=%s\nbayer=%s\nraw_bytes=%zu\n",
+		camera, width, height, stride, fourcc, bayer, raw_length);
+	if (fclose(meta) != 0) {
+		write_capture_error();
+		return -1;
+	}
+	status = fopen(CAPTURE_STATUS ".tmp", "w");
+	if (!status) {
+		write_capture_error();
+		return -1;
+	}
+	fprintf(status, "ok\nbmp=%s\nraw=%s\nmeta=%s\n", bmp_path, raw_path, meta_path);
+	if (fclose(status) != 0 || rename(CAPTURE_STATUS ".tmp", CAPTURE_STATUS) < 0) {
+		write_capture_error();
+		return -1;
+	}
+	fprintf(stdout, "capture saved: %s (raw: %s)\n", bmp_path, raw_path);
+	fflush(stdout);
+	return 0;
+}
+
 static void render(uint8_t *shared, unsigned int screen_width,
 		   unsigned int screen_height, const uint8_t *raw,
 		   unsigned int raw_stride, unsigned int raw_width,
@@ -209,8 +362,8 @@ int main(int argc, char **argv)
 	enum bayer_pattern pattern;
 	enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
 
-	if (argc != 8) {
-		fprintf(stderr, "usage: %s VIDEO SHARED WIDTH HEIGHT FORMAT MIRROR FOURCC\n", argv[0]);
+	if (argc != 9) {
+		fprintf(stderr, "usage: %s VIDEO SHARED WIDTH HEIGHT FORMAT MIRROR FOURCC CAMERA\n", argv[0]);
 		return EXIT_FAILURE;
 	}
 	screen_width = strtoul(argv[3], NULL, 10);
@@ -238,6 +391,7 @@ int main(int argc, char **argv)
 
 	signal(SIGINT, stop_running);
 	signal(SIGTERM, stop_running);
+	signal(SIGUSR1, request_capture);
 	video_fd = open(argv[1], O_RDWR | O_CLOEXEC | O_NONBLOCK);
 	if (video_fd < 0 || xioctl(video_fd, VIDIOC_S_FMT, &format) < 0 ||
 	    format.fmt.pix_mp.width != 1920 || format.fmt.pix_mp.height != 1080 ||
@@ -292,6 +446,16 @@ int main(int argc, char **argv)
 		render(shared, screen_width, screen_height, buffers[buffer.index].data,
 		       format.fmt.pix_mp.plane_fmt[0].bytesperline, format.fmt.pix_mp.width,
 		       format.fmt.pix_mp.height, pattern, mirror);
+		if (capture_requested) {
+			size_t bytes_used = planes[0].bytesused;
+
+			capture_requested = 0;
+			if (!bytes_used || bytes_used > buffers[buffer.index].length)
+				bytes_used = buffers[buffer.index].length;
+			save_capture(argv[8], argv[5], argv[7], buffers[buffer.index].data,
+				     bytes_used, format.fmt.pix_mp.plane_fmt[0].bytesperline,
+				     format.fmt.pix_mp.width, format.fmt.pix_mp.height, pattern);
+		}
 		if (xioctl(video_fd, VIDIOC_QBUF, &buffer) < 0)
 			break;
 	}
