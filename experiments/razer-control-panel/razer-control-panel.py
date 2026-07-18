@@ -636,7 +636,7 @@ class ControlPanel:
         self.message = "VIBRATION TEST..."
         self.draw()
         result = run([HAPTIC_TEST], timeout=8)
-        self.message = self.test_result(result, "VIBRATION OK", "VIBRATION FAILED")
+        self.message = self.test_result(result, "CHECK PHONE VIBRATION", "VIBRATION FAILED")
         print(f"haptic result={result.returncode} message={self.message}", flush=True)
 
     def test_audio(self):

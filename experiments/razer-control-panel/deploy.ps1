@@ -13,6 +13,8 @@ $kmsSource = Join-Path $experimentDir "razer-kms-present.c"
 $kmsBinary = Join-Path $env:TEMP "razer-kms-present-arm64"
 $cameraSource = Join-Path $experimentDir "razer-camera-preview.c"
 $cameraBinary = Join-Path $env:TEMP "razer-camera-preview-arm64"
+$hapticSource = Join-Path $experimentDir "razer-haptic-ff.c"
+$hapticBinary = Join-Path $env:TEMP "razer-haptic-ff-arm64"
 
 function ConvertTo-WslPath([string]$Path) {
     $fullPath = [IO.Path]::GetFullPath($Path)
@@ -35,6 +37,14 @@ $cameraBinaryWsl = ConvertTo-WslPath $cameraBinary
     -o $cameraBinaryWsl $cameraSourceWsl
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to cross-compile the camera preview helper"
+}
+
+$hapticSourceWsl = ConvertTo-WslPath $hapticSource
+$hapticBinaryWsl = ConvertTo-WslPath $hapticBinary
+& wsl.exe -d $Distro --exec aarch64-linux-gnu-gcc -O2 -Wall -Wextra `
+    -o $hapticBinaryWsl $hapticSourceWsl
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to cross-compile the haptics helper"
 }
 
 if (!(Test-Path -LiteralPath $IdentityFile)) {
@@ -118,6 +128,7 @@ if ($keyLoginExitCode -ne 0) {
     (Join-Path $experimentDir "razer-audio-test.sh") `
     $kmsBinary `
     $cameraBinary `
+    $hapticBinary `
     "${target}:/tmp/"
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to copy the control panel files"
@@ -132,12 +143,13 @@ printf '%s' "`$password" | sudo -S install -m 0644 /tmp/razer-control-panel.serv
 printf '%s' "`$password" | sudo -S install -m 0755 /tmp/razer-shutdown-console.sh /usr/local/sbin/razer-shutdown-console
 printf '%s' "`$password" | sudo -S install -m 0755 /tmp/razer-kms-present-arm64 /usr/local/sbin/razer-kms-present
 printf '%s' "`$password" | sudo -S install -m 0755 /tmp/razer-camera-preview-arm64 /usr/local/sbin/razer-camera-preview
+printf '%s' "`$password" | sudo -S install -m 0755 /tmp/razer-haptic-ff-arm64 /usr/local/sbin/razer-haptic-ff
 printf '%s' "`$password" | sudo -S install -m 0755 /tmp/razer-camera-launch.sh /usr/local/sbin/razer-camera-launch
 printf '%s' "`$password" | sudo -S install -m 0755 /tmp/razer-haptic-test.sh /usr/local/sbin/razer-haptic-test
 printf '%s' "`$password" | sudo -S install -m 0755 /tmp/razer-audio-test.sh /usr/local/sbin/razer-audio-test
-if ! command -v media-ctl >/dev/null || ! command -v v4l2-ctl >/dev/null || ! command -v fftest >/dev/null || ! command -v speaker-test >/dev/null; then
+if ! command -v media-ctl >/dev/null || ! command -v v4l2-ctl >/dev/null || ! command -v speaker-test >/dev/null; then
     printf '%s' "`$password" | sudo -S apt-get update
-    printf '%s' "`$password" | sudo -S apt-get install -y v4l-utils joystick alsa-utils
+    printf '%s' "`$password" | sudo -S apt-get install -y v4l-utils alsa-utils
 fi
 printf '%s' "`$password" | sudo -S systemctl disable --now razer-panel-idle-blank.service
 printf '%s' "`$password" | sudo -S systemctl disable --now getty@tty1.service
@@ -155,3 +167,4 @@ if ($LASTEXITCODE -ne 0) {
 
 Remove-Item -Force -LiteralPath $kmsBinary -ErrorAction SilentlyContinue
 Remove-Item -Force -LiteralPath $cameraBinary -ErrorAction SilentlyContinue
+Remove-Item -Force -LiteralPath $hapticBinary -ErrorAction SilentlyContinue

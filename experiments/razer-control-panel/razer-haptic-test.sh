@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-command -v fftest >/dev/null 2>&1 || {
-	echo "fftest missing; install joystick" >&2
+command -v /usr/local/sbin/razer-haptic-ff >/dev/null 2>&1 || {
+	echo "razer-haptic-ff is not installed" >&2
 	exit 1
 }
 
@@ -30,8 +30,4 @@ done
 	exit 1
 }
 
-{
-	printf '4\n'
-	sleep 1
-	printf '%s\n' -1
-} | timeout 6s fftest "$event"
+exec /usr/local/sbin/razer-haptic-ff "$event"

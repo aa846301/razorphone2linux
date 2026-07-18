@@ -1,5 +1,34 @@
 # Camera, audio, and haptics status (2026-07-17)
 
+## Live audit of `v1.0.17` (2026-07-18)
+
+- Rear IMX363 probes and the complete sensor-to-`/dev/video0` graph streams.
+  The apparent panel failure is userspace CPU starvation: the original
+  full-screen software demosaic used one core continuously for more than 14
+  seconds without completing its first shared frame. The preview now demosaics
+  one sample per 4x4 output block and remains a diagnostic path, not an ISP.
+- Front S5K3H7 still returns `-ENXIO` at chip-ID read. A live rebind trace taken
+  during the factory 20 ms reset delay proves GPIO4/VDIG, GPIO8/VIO, MCLK and
+  reset are asserted, while GPIO7/VANA stays low. The PMIC GPIO dump explains
+  the mismatch: GPIO4 and GPIO8 retain low output-drive strength, but GPIO7 is
+  `no` drive. Mainline DT now explicitly programs all three switched rails to
+  `PMIC_GPIO_STRENGTH_LOW`, removing dependence on bootloader register state.
+- A five-second FF_RUMBLE trace proves PMI8998 `HAP_EN_CTL1` changes to `0x80`
+  and status changes to `0x82` (BUSY), then both return to zero at stop.
+  `HAP_PLAY` is not a reliable static-read test because its trigger bit clears.
+  The panel no longer trusts `fftest`'s text or scans the slow regmap debugfs.
+  Its dedicated helper sends 100% gain and maximum FF_RUMBLE magnitude for two
+  seconds, then explicitly asks for physical confirmation; LRA motion remains
+  unverified.
+- Audio has no ALSA card because the SLIMbus controller itself never completes
+  probe: Razer's factory ADSP omits `avs/audio` from PDR, and mainline treats
+  lookup error `-ENXIO` as fatal. Downstream falls back to SSR and schedules
+  domain-up on QMI server arrival. Patch `0015` ports that call chain so the
+  WCD9340 SLIM devices can enumerate before the existing ASoC/MI2S fixes run.
+
+These changes require a new kernel/DTB. Only the preview performance and panel
+diagnostics are userspace changes that can be redeployed without flashing.
+
 ## Follow-up live audit of `v1.0.16`
 
 - Rear IMX363 is now proven at the hardware level. With the graph configured as
@@ -11,7 +40,9 @@
   rail order and voltages are already present, but the PM8998 GPIO4/GPIO7/GPIO8
   pin states were not: the live PMIC GPIO dump retained pull configurations
   that differ from Razer's output-low factory states. The next DTB restores the
-  original normal-function, output-low, bias-disabled, power-source-0 pinctrl.
+  original normal-function, output-low, power-source-0 pinctrl. The later
+  `v1.0.17` audit above found that explicit mainline drive strength was also
+  required because GPIO7 inherited a disabled output driver.
 - EV_FF accepts and uploads rumble effects, but no physical vibration occurs.
   Factory `qti-haptics` source shows the missing initialization: PMI8998
   `HAP_EN_CTL3` must enable the H-bridge, PWM path, current limiter, DAC and

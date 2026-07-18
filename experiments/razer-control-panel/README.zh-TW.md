@@ -159,16 +159,26 @@ framework 已完成。
 
 ## 6. 測試震動與聲音
 
-主畫面的 `VIBRATE` 會透過 `spmi_haptics` 的 force-feedback 介面執行約一秒
+主畫面的 `VIBRATE` 會透過 `spmi_haptics` 的 force-feedback 介面執行約兩秒
 的強震動；`SOUND` 會在第一個 ALSA playback PCM 播放一次 440 Hz 雙聲道
-測試音。成功時面板底部會顯示 `VIBRATION OK` 或 `SOUND OK`，失敗時會顯示
-最後一行錯誤。
+測試音。震動 helper 會直接送出 100% gain、最大 magnitude 的 `FF_RUMBLE`，
+成功時顯示 `CHECK PHONE VIBRATION`；這只證明核心接受完整的兩秒命令，仍要
+用手確認 LRA 真的震動。聲音成功時顯示 `SOUND OK`，失敗時會顯示最後一行
+錯誤。
 
 可由 SSH 執行相同測試並查看完整輸出：
 
 ```bash
 sudo /usr/local/sbin/razer-haptic-test
 sudo /usr/local/sbin/razer-audio-test
+```
+
+震動的核心暫存器也可直接確認；播放時 `c046` 應為 `80`，`c00a` 的 busy
+bit 應被設起，停止後兩者回到 0：
+
+```bash
+sudo grep -E '^c00a:|^c046:|^c04a:|^c070:' \
+  /sys/kernel/debug/regmap/0-03/registers
 ```
 
 聲卡或 codec 出現在 `aplay -l`／`dmesg` 只代表枚舉成功；仍須以實際聽到
@@ -181,6 +191,7 @@ sudo /usr/local/sbin/razer-audio-test
 /usr/local/sbin/razer-kms-present
 /usr/local/sbin/razer-camera-preview
 /usr/local/sbin/razer-camera-launch
+/usr/local/sbin/razer-haptic-ff
 /usr/local/sbin/razer-haptic-test
 /usr/local/sbin/razer-audio-test
 /usr/local/sbin/razer-shutdown-console

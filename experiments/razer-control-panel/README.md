@@ -29,6 +29,7 @@ The deployed files on the phone are:
 /usr/local/sbin/razer-kms-present
 /usr/local/sbin/razer-camera-preview
 /usr/local/sbin/razer-camera-launch
+/usr/local/sbin/razer-haptic-ff
 /usr/local/sbin/razer-haptic-test
 /usr/local/sbin/razer-audio-test
 /usr/local/sbin/razer-shutdown-console

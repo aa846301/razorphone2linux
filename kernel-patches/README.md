@@ -26,6 +26,9 @@ Current production delta:
   factory driver before `HAP_PLAY` can drive the LRA.
 - `0014` keeps the Razer dual-amplifier QUAT MI2S backend at four channels so
   AFE transmits on both factory-wired SD0 and SD1 data lines.
+- `0015` follows the downstream SLIMbus fallback: if the factory ADSP omits
+  the `avs/audio` PDR service, continue with SSR and start NGD when its QMI
+  service arrives so WCD9340 devices can enumerate.
 
 Observational logging, crash dumps, QRTR dumps, and live-only experiments are
 kept under `diagnostics/` and are not applied by normal builds.

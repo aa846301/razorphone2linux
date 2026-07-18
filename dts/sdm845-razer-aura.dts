@@ -1024,7 +1024,7 @@
 		pins = "gpio4";
 		function = "normal";
 		output-low;
-		bias-disable;
+		qcom,drive-strength = <PMIC_GPIO_STRENGTH_LOW>;
 		power-source = <0>;
 	};
 
@@ -1032,7 +1032,7 @@
 		pins = "gpio7";
 		function = "normal";
 		output-low;
-		bias-disable;
+		qcom,drive-strength = <PMIC_GPIO_STRENGTH_LOW>;
 		power-source = <0>;
 	};
 
@@ -1040,7 +1040,7 @@
 		pins = "gpio8";
 		function = "normal";
 		output-low;
-		bias-disable;
+		qcom,drive-strength = <PMIC_GPIO_STRENGTH_LOW>;
 		power-source = <0>;
 	};
 

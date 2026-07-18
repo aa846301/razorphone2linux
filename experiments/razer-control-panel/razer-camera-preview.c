@@ -16,6 +16,7 @@
 
 #define BUFFER_COUNT 4
 #define HEADER_HEIGHT 210
+#define PREVIEW_BLOCK 4
 
 static volatile sig_atomic_t running = 1;
 
@@ -159,15 +160,36 @@ static void render(uint8_t *shared, unsigned int screen_width,
 	memset(pixels + (size_t)HEADER_HEIGHT * screen_width, 0,
 	       (size_t)available_height * screen_width * sizeof(*pixels));
 
-	for (dy = 0; dy < available_height; dy++) {
+	/*
+	 * Full-resolution software demosaicing takes more than a frame interval on
+	 * the SDM845 little cores and keeps the shared-frame sequence permanently
+	 * odd. Demosaic one sample per small preview block, then replicate it.
+	 */
+	for (dy = 0; dy < available_height; dy += PREVIEW_BLOCK) {
 		int sx = dy * raw_width / available_height;
-		for (dx = 0; dx < draw_width; dx++) {
+		unsigned int block_height = available_height - dy;
+
+		if (block_height > PREVIEW_BLOCK)
+			block_height = PREVIEW_BLOCK;
+		for (dx = 0; dx < draw_width; dx += PREVIEW_BLOCK) {
 			int sy = dx * raw_height / draw_width;
+			unsigned int block_width = draw_width - dx;
+			uint32_t color;
+			unsigned int bx, by;
+
 			if (!mirror)
 				sy = raw_height - 1 - sy;
-			pixels[(size_t)(HEADER_HEIGHT + dy) * screen_width + x0 + dx] =
-				debayer(raw, raw_stride, raw_width, raw_height,
+			if (block_width > PREVIEW_BLOCK)
+				block_width = PREVIEW_BLOCK;
+			color = debayer(raw, raw_stride, raw_width, raw_height,
 					sx, sy, pattern);
+			for (by = 0; by < block_height; by++) {
+				uint32_t *row = pixels +
+					(size_t)(HEADER_HEIGHT + dy + by) * screen_width + x0 + dx;
+
+				for (bx = 0; bx < block_width; bx++)
+					row[bx] = color;
+			}
 		}
 	}
 	__atomic_add_fetch((uint64_t *)shared, 1, __ATOMIC_RELEASE);
