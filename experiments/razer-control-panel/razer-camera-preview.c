@@ -95,6 +95,11 @@ enum bayer_pattern {
 	BAYER_GBRG,
 };
 
+struct color_balance {
+	unsigned int red_gain;
+	unsigned int blue_gain;
+};
+
 static enum bayer_color bayer_color_at(enum bayer_pattern pattern, int x, int y)
 {
 	static const enum bayer_color colors[][4] = {
@@ -107,9 +112,73 @@ static enum bayer_color bayer_color_at(enum bayer_pattern pattern, int x, int y)
 	return colors[pattern][((y & 1) << 1) | (x & 1)];
 }
 
+static unsigned int histogram_median(const unsigned int *histogram,
+				     unsigned int count)
+{
+	unsigned int accumulated = 0, value;
+
+	for (value = 0; value < 1024; value++) {
+		accumulated += histogram[value];
+		if (accumulated >= count / 2)
+			return value;
+	}
+	return 1023;
+}
+
+static struct color_balance estimate_color_balance(const uint8_t *raw,
+						    unsigned int stride,
+						    unsigned int width,
+						    unsigned int height,
+						    enum bayer_pattern pattern)
+{
+	unsigned int histogram[3][1024] = {{0}};
+	unsigned int count[3] = {0};
+	unsigned int median[3], green, x, y, dx, dy;
+	struct color_balance balance = { 1024, 1024 };
+
+	/*
+	 * Android CamX normally supplies AWB and a colour-correction matrix.  The
+	 * diagnostic panel receives untouched Bayer data, so estimate a bounded
+	 * grey-world balance from a sparse 2x2 Bayer sample grid.  RAW10 captures
+	 * remain byte-for-byte untouched for driver analysis.
+	 */
+	for (y = 0; y + 1 < height; y += 16) {
+		for (x = 0; x + 1 < width; x += 16) {
+			for (dy = 0; dy < 2; dy++) {
+				for (dx = 0; dx < 2; dx++) {
+					enum bayer_color color = bayer_color_at(pattern,
+									 x + dx, y + dy);
+					unsigned int value = sample(raw, stride, width,
+								    height, x + dx, y + dy);
+
+					histogram[color][value]++;
+					count[color]++;
+				}
+			}
+		}
+	}
+	for (x = 0; x < 3; x++)
+		median[x] = histogram_median(histogram[x], count[x]);
+	green = median[BAYER_GREEN];
+	if (median[BAYER_RED])
+		balance.red_gain = green * 1024 / median[BAYER_RED];
+	if (median[BAYER_BLUE])
+		balance.blue_gain = green * 1024 / median[BAYER_BLUE];
+	if (balance.red_gain < 512)
+		balance.red_gain = 512;
+	else if (balance.red_gain > 4096)
+		balance.red_gain = 4096;
+	if (balance.blue_gain < 512)
+		balance.blue_gain = 512;
+	else if (balance.blue_gain > 4096)
+		balance.blue_gain = 4096;
+	return balance;
+}
+
 static uint32_t debayer(const uint8_t *raw, unsigned int stride,
 			unsigned int width, unsigned int height,
-			int x, int y, enum bayer_pattern pattern)
+			int x, int y, enum bayer_pattern pattern,
+			const struct color_balance *balance)
 {
 	unsigned int p = sample(raw, stride, width, height, x, y);
 	unsigned int r, g, b;
@@ -149,6 +218,8 @@ static uint32_t debayer(const uint8_t *raw, unsigned int stride,
 			     sample(raw, stride, width, height, x + 1, y)) / 2;
 		}
 	}
+	r = r * balance->red_gain / 1024;
+	b = b * balance->blue_gain / 1024;
 
 	return (uint32_t)to_u8(r) << 16 | (uint32_t)to_u8(g) << 8 | to_u8(b);
 }
@@ -188,6 +259,8 @@ static int write_bmp(const char *path, const uint8_t *raw, unsigned int stride,
 	uint32_t image_size = row_stride * height;
 	uint8_t header[54] = { 'B', 'M' };
 	uint8_t *row = calloc(1, row_stride);
+	struct color_balance balance = estimate_color_balance(raw, stride, width,
+							     height, pattern);
 	FILE *file;
 	unsigned int x, y;
 	int result = 0;
@@ -213,7 +286,8 @@ static int write_bmp(const char *path, const uint8_t *raw, unsigned int stride,
 	for (y = 0; !result && y < height; y++) {
 		memset(row, 0, row_stride);
 		for (x = 0; x < width; x++) {
-			uint32_t color = debayer(raw, stride, width, height, x, y, pattern);
+			uint32_t color = debayer(raw, stride, width, height, x, y,
+						 pattern, &balance);
 
 			row[x * 3] = color;
 			row[x * 3 + 1] = color >> 8;
@@ -302,6 +376,9 @@ static void render(uint8_t *shared, unsigned int screen_width,
 		   unsigned int raw_height, enum bayer_pattern pattern, int mirror)
 {
 	uint32_t *pixels = (uint32_t *)(shared + sizeof(uint64_t));
+	struct color_balance balance = estimate_color_balance(raw, raw_stride,
+							     raw_width, raw_height,
+							     pattern);
 	unsigned int available_height = screen_height - HEADER_HEIGHT;
 	unsigned int draw_width = raw_height * available_height / raw_width;
 	unsigned int x0, dx, dy;
@@ -335,7 +412,7 @@ static void render(uint8_t *shared, unsigned int screen_width,
 			if (block_width > PREVIEW_BLOCK)
 				block_width = PREVIEW_BLOCK;
 			color = debayer(raw, raw_stride, raw_width, raw_height,
-					sx, sy, pattern);
+					sx, sy, pattern, &balance);
 			for (by = 0; by < block_height; by++) {
 				uint32_t *row = pixels +
 					(size_t)(HEADER_HEIGHT + dy + by) * screen_width + x0 + dx;
@@ -356,19 +433,21 @@ int main(int argc, char **argv)
 	struct buffer buffers[BUFFER_COUNT] = {{0}};
 	struct stat shared_stat;
 	uint8_t *shared = MAP_FAILED;
-	unsigned int screen_width, screen_height, index;
+	unsigned int screen_width, screen_height, raw_width, raw_height, index;
 	uint32_t requested_fourcc;
 	int video_fd = -1, shared_fd = -1, mirror, result = EXIT_FAILURE;
 	enum bayer_pattern pattern;
 	enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
 
-	if (argc != 9) {
-		fprintf(stderr, "usage: %s VIDEO SHARED WIDTH HEIGHT FORMAT MIRROR FOURCC CAMERA\n", argv[0]);
+	if (argc != 11) {
+		fprintf(stderr, "usage: %s VIDEO SHARED WIDTH HEIGHT FORMAT MIRROR FOURCC CAMERA RAW_WIDTH RAW_HEIGHT\n", argv[0]);
 		return EXIT_FAILURE;
 	}
 	screen_width = strtoul(argv[3], NULL, 10);
 	screen_height = strtoul(argv[4], NULL, 10);
-	if (!screen_width || screen_height <= HEADER_HEIGHT)
+	raw_width = strtoul(argv[9], NULL, 10);
+	raw_height = strtoul(argv[10], NULL, 10);
+	if (!screen_width || screen_height <= HEADER_HEIGHT || !raw_width || !raw_height)
 		return EXIT_FAILURE;
 	if (!strcmp(argv[5], "RGGB"))
 		pattern = BAYER_RGGB;
@@ -383,8 +462,8 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 	mirror = atoi(argv[6]);
-	format.fmt.pix_mp.width = 1920;
-	format.fmt.pix_mp.height = 1080;
+	format.fmt.pix_mp.width = raw_width;
+	format.fmt.pix_mp.height = raw_height;
 	requested_fourcc = v4l2_fourcc(argv[7][0], argv[7][1], argv[7][2], argv[7][3]);
 	format.fmt.pix_mp.pixelformat = requested_fourcc;
 	format.fmt.pix_mp.field = V4L2_FIELD_NONE;
@@ -394,7 +473,7 @@ int main(int argc, char **argv)
 	signal(SIGUSR1, request_capture);
 	video_fd = open(argv[1], O_RDWR | O_CLOEXEC | O_NONBLOCK);
 	if (video_fd < 0 || xioctl(video_fd, VIDIOC_S_FMT, &format) < 0 ||
-	    format.fmt.pix_mp.width != 1920 || format.fmt.pix_mp.height != 1080 ||
+	    format.fmt.pix_mp.width != raw_width || format.fmt.pix_mp.height != raw_height ||
 	    format.fmt.pix_mp.pixelformat != requested_fourcc ||
 	    format.fmt.pix_mp.num_planes != 1) {
 		perror("razer-camera-preview: video format");

@@ -24,6 +24,8 @@ Current production delta:
   sensor cannot suppress the working rear sensor node.
 - `0013` enables the PMI8998 haptics analog output stage required by the
   factory driver before `HAP_PLAY` can drive the LRA.
+- `0014` restores the downstream CCI transaction retry count of three in the
+  hardware SET_PARAM command, so a first sensor NACK is retried by CCI.
 - The factory `qcom,msm-mi2s-rx-lines = <2>` value is a bitmask selecting SD1,
   not a count of two data lines. The board DTS keeps the QUAT backend stereo
   and selects only SD1 for both TFA9912 amplifiers.

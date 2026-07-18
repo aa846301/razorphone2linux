@@ -9,6 +9,11 @@ S16_LE stereo，MultiMedia1 已 route 到 QUAT MI2S，DAPM route 為 ON，GPIO58
 `0x001c`：PLLS、CLKS、SWS、AMPS、AREFS 均未成立。最早未完成邊界是 QUAT
 MI2S bit clock/reference 到功放，而不是 ALSA PCM 或面板。
 
+原廠與主線 pinctrl 逐腳對照後找到確定差異：原廠把 GPIO60/SD0 設為 input，
+GPIO61/SD1 設為 output-high；generic SDM845 DTS 兩者都沒指定方向。實機播放時
+GPIO61 也確實顯示為 `in low func1`，但 Razer 的兩顆功放正是接收 SD1。板級 DTS
+現已補回原廠方向，需刷入新 DTB 驗證 BCLK/CLKS 與實際聲音。
+
 ## 主線 Linux 與網路既有實作
 
 - 主線已有 SDM845 ASoC machine driver、Q6ASM/Q6AFE/Q6ADM、QUAT MI2S DAI、
@@ -33,7 +38,7 @@ MI2S bit clock/reference 到功放，而不是 ALSA PCM 或面板。
 | 格式 | 48 kHz、stereo；S16 時 BCLK 1.536 MHz | 48 kHz S16 stereo，`MI2S_BCLK_RATE=1536000` | PCM RUNNING |
 | master | AP/CPU 提供 BCLK/FS，codec 為 slave (`CBS_CFS`) | CPU `BP_FP`，codec `BC_FC` | format API 等價；需確認 return |
 | data line | `qcom,msm-mi2s-rx-lines=<2>` 是 bitmask SD1 | `qcom,sd-lines=<1>` | GPIO SD1 mux 有效 |
-| pins | GPIO58–61 QUAT MI2S active | `quat_mi2s_*` | 播放時 mux 正確 |
+| pins | GPIO58/59 output-high、GPIO60 input、GPIO61 output-high | 板級覆寫 SD0 input、SD1 output-high | 舊 DTB 的 GPIO61 實測為 input；待刷新版 |
 | codecs | TFA9912，I2C5 `0x34`、`0x35` | 兩個 codec DAI | 兩顆 probe/start/unmute |
 | firmware | stock `tfa98xx.cnt` | 安裝到 firmware path | hash 與 stock 一致 |
 | codec profile | 48 kHz speaker profile | 兩顆套用相同 profile | live log 一致 |
@@ -56,18 +61,21 @@ mainline 等價鏈為 `sdm845_snd_startup()`：
 1. `snd_soc_dai_set_sysclk(...Q6AFE_LPASS_CLK_ID_QUAD_MI2S_IBIT, 1536000...)`；
 2. Q6AFE 送出 `AFE_PARAM_ID_CLOCK_SET`；
 3. CPU DAI 設為 `BP_FP`，兩顆 codec DAI 設為 `BC_FC|NB_NF|I2S`；
-4. DTS default pinctrl 切至 QUAT MI2S pins。
+4. DTS default pinctrl 切至 QUAT MI2S pins，板級狀態依原廠指定 SD0 input、
+   SD1 output-high。
 
 clock ID、頻率與 master/slave 語意和原廠一致。先前 machine driver 忽略 CPU
 `set_sysclk`、CPU `set_fmt` 的回傳值，因此 userspace 可能在 clock request 失敗
 時仍看到播放成功。本輪修改 `kernel-patches/0008`，讓兩個 CPU DAI 步驟與兩顆
 codec format 任一步失敗都立即回傳並記錄明確錯誤。這是以原廠調用鏈為依據的
-失敗邊界修正，不宣稱已經讓硬體發聲。
+失敗邊界修正。這一輪另修正 SD1 實際方向；在新 DTB 實機播放前仍不宣稱已經
+讓硬體發聲。
 
 ## 下一輪驗證門檻
 
 1. 刷入同一次 GitHub Actions 產生的 boot/rootfs，避免 module mismatch。
-2. 執行 `scripts/diagnostics/phone-audio-playback-state.sh`；確認沒有新增的
+2. 執行 `scripts/diagnostics/phone-audio-playback-state.sh`；先確認播放期間
+   GPIO61 為 `out ... func1`，並確認沒有新增的
    `QUAT MI2S bit clock error` 或 `CPU format error`。
 3. 播放期間讀 TFA status `0x10`。只有 CLKS/PLLS 出現後才追功放 profile、
    boost/current 與 AMPS；若仍沒有 CLKS，直接量 GPIO58 BCLK、GPIO59 WS 與

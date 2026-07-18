@@ -1,5 +1,23 @@
 # Camera, audio, and haptics status (2026-07-17)
 
+## Source and live follow-up (2026-07-19)
+
+- Rear IMX363 was streamed again at 4032x3024 using the driver's complete mode
+  table.  Its RAW10 has the expected two-pixel Bayer phase, while the 1920x1080
+  mode has a strong four-pixel phase.  This rules out CSI byte-lane order and
+  locates the stripe defect in the incomplete 1080p sensor mode.  The panel now
+  uses the clean full-resolution mode and applies bounded grey-world balance to
+  BMP/preview output; saved RAW10 remains unchanged.
+- Front S5K3H7 still fails at chip-ID read.  Mainline `i2c-qcom-cci` maps the
+  observed `-ENXIO` specifically from a CCI NACK IRQ.  Razer's factory camera
+  call chain programs `retries=3` in SET_PARAM bits 16-17, while mainline used
+  zero.  Patch `0014` restores that hardware retry field for the next image.
+- Audio playback reaches a RUNNING PCM, active DAPM route and started/unmuted
+  TFA9912 codecs, but both amplifiers report no CLKS/PLLS.  Factory pinctrl
+  makes GPIO61/QUAT SD1 an output; generic SDM845 left it directionless and the
+  live phone showed `in low func1`.  The board DTS now restores SD1 output-high
+  (and the factory SD0 input-enable state) for the next image.
+
 ## Rear RAW10 capture follow-up (2026-07-18)
 
 - The control panel now has a `CAPTURE` action during camera preview. The next

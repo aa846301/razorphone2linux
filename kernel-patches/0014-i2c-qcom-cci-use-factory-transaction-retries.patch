@@ -1,0 +1,55 @@
+From 97bc723492147ad0871448f771a06a5c538d2704 Mon Sep 17 00:00:00 2001
+From: Razer Phone 2 Linux Maintainers <razerphone2linux@localhost>
+Date: Sun, 19 Jul 2026 14:00:00 +0800
+Subject: [PATCH] i2c: qcom-cci: use factory transaction retries
+
+The Razer SDM845 downstream camera stack programs a retry count of three in
+bits 16-17 of every CCI I2C SET_PARAM command.  The mainline CCI driver leaves
+these bits at zero, so a transient first NACK immediately fails sensor probe.
+
+Program the same hardware retry count for CCI reads and writes.  This matches
+the downstream controller transaction rather than adding a sensor-specific
+software retry loop.
+
+Signed-off-by: Razer Phone 2 Linux Maintainers <razerphone2linux@localhost>
+---
+ drivers/i2c/busses/i2c-qcom-cci.c | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/i2c/busses/i2c-qcom-cci.c b/drivers/i2c/busses/i2c-qcom-cci.c
+index f3ccfbbc4bea..4a7b5f1ce102 100644
+--- a/drivers/i2c/busses/i2c-qcom-cci.c
++++ b/drivers/i2c/busses/i2c-qcom-cci.c
+@@ -77,6 +77,10 @@
+ #define CCI_I2C_READ		10
+ 
+ #define CCI_I2C_REPORT_IRQ_EN	BIT(8)
++#define CCI_I2C_SET_PARAM_RETRIES_SHIFT	16
++#define CCI_I2C_SET_PARAM_RETRIES	3
++#define CCI_I2C_SET_PARAM_RETRY_BITS					\
++	(CCI_I2C_SET_PARAM_RETRIES << CCI_I2C_SET_PARAM_RETRIES_SHIFT)
+ 
+ enum {
+ 	I2C_MODE_STANDARD,
+@@ -344,7 +348,8 @@ static int cci_i2c_read(struct cci *cci, u16 master,
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	val = CCI_I2C_SET_PARAM | (addr & 0x7f) << 4;
++	val = CCI_I2C_SET_PARAM | (addr & 0x7f) << 4 |
++	      CCI_I2C_SET_PARAM_RETRY_BITS;
+ 	writel(val, cci->base + CCI_I2C_Mm_Qn_LOAD_DATA(master, queue));
+ 
+ 	val = CCI_I2C_READ | len << 4;
+@@ -397,7 +402,8 @@ static int cci_i2c_write(struct cci *cci, u16 master,
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	val = CCI_I2C_SET_PARAM | (addr & 0x7f) << 4;
++	val = CCI_I2C_SET_PARAM | (addr & 0x7f) << 4 |
++	      CCI_I2C_SET_PARAM_RETRY_BITS;
+ 	writel(val, cci->base + CCI_I2C_Mm_Qn_LOAD_DATA(master, queue));
+ 
+ 	load[i++] = CCI_I2C_WRITE | len << 4;
+-- 
+2.51.0

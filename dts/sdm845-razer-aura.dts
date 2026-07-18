@@ -1302,6 +1302,20 @@
 };
 
 /*
+ * The factory RC2 pinctrl drives QUAT MI2S SD1 (GPIO61) as an output and
+ * enables input on SD0 (GPIO60).  The generic SDM845 states leave both pins
+ * directionless, which made GPIO61 settle as an input while the Razer
+ * speakers are wired to the SD1 transmit line.
+ */
+&quat_mi2s_sd0_active {
+	input-enable;
+};
+
+&quat_mi2s_sd1_active {
+	output-high;
+};
+
+/*
  * ==========================================================================
  * Sound Card
  * ==========================================================================

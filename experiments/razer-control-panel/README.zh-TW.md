@@ -105,7 +105,9 @@ powershell -ExecutionPolicy Bypass -File experiments\razer-control-panel\deploy.
 
 腳本會依序：
 
-1. 在指定 WSL distro 交叉編譯 ARM64 DRM/KMS presenter 與相機預覽 helper。
+1. 在指定 WSL distro 交叉編譯 ARM64 DRM/KMS presenter、相機預覽與震動
+   helper。原始碼由 stdin 傳入、binary 以 base64 傳回，因此不依賴可能卡住的
+   WSL `/mnt/c` 或 `/mnt/d` 掛載。
 2. 測試 SSH key 登入；需要時用密碼安裝 public key。
 3. 以 `scp` 複製控制面板、service 與 helpers 到手機 `/tmp`。
 4. 安裝檔案到 `/usr/local/sbin` 與 `/etc/systemd/system`。
@@ -144,11 +146,15 @@ dmesg | grep -Ei 'drm|dsi|panel|touch|input'
 ## 5. 測試前後鏡頭
 
 面板上的 `REAR CAMERA` 與 `FRONT CAMERA` 會重新設定 qcom-camss media
-graph，啟動 1920×1080 RAW10 預覽；按 `BACK` 會停止串流並回到主畫面。
+graph；按 `BACK` 會停止串流並回到主畫面。目前後鏡頭使用 4032×3024
+RAW10 完整模式，因為移植中的 1920×1080 IMX363 mode table 不完整，會在
+感測器輸出的 RAW 資料產生四像素週期條紋。前鏡頭在 probe 完成後會使用
+1920×1080 RAW10。
 
 預覽啟動後，按畫面上的 `CAPTURE`。面板會在下一個完整 frame 同時保存：
 
-- `*.bmp`：已轉成可直接查看與傳送的全解析度影像。
+- `*.bmp`：已 demosaic 並套用簡易灰世界白平衡、可直接查看與傳送的全解析度
+  影像。
 - `*.raw10`：V4L2 提供的原始 packed RAW10 frame，用來檢查 Bayer 排列、
   stride、CSI lane 或每四個像素的 packing 問題。
 - `*.txt`：鏡頭、解析度、fourcc、時間與實際 frame byte 數。
@@ -183,8 +189,9 @@ media-ctl -p
 dmesg | grep -Ei 'imx363|s5k3h7|camss|csiphy|csid|vfe'
 ```
 
-目前這只驗證預覽 bring-up，不代表拍照、錄影、AE/AWB/AF、OIS 或完整相機
-framework 已完成。
+BMP 與面板預覽只有簡易軟體白平衡，沒有 Android CamX/ISP 的 AE、精確 AWB、
+色彩矩陣、gamma、降噪、AF 或 OIS；所以顏色只能用來診斷，不代表最終相機
+品質。`*.raw10` 永遠保留核心輸出的原始 bytes，不會被白平衡修改。
 
 ## 6. 測試震動與聲音
 

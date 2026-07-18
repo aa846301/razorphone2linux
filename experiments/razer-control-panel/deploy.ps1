@@ -16,36 +16,41 @@ $cameraBinary = Join-Path $env:TEMP "razer-camera-preview-arm64"
 $hapticSource = Join-Path $experimentDir "razer-haptic-ff.c"
 $hapticBinary = Join-Path $env:TEMP "razer-haptic-ff-arm64"
 
-function ConvertTo-WslPath([string]$Path) {
-    $fullPath = [IO.Path]::GetFullPath($Path)
-    $drive = $fullPath.Substring(0, 1).ToLowerInvariant()
-    $remainder = $fullPath.Substring(2).Replace("\", "/")
-    return "/mnt/$drive$remainder"
+function Build-WslArm64(
+    [string]$Source,
+    [string]$Binary,
+    [string]$CompilerArguments,
+    [string]$Description
+) {
+    # Feed source through stdin and return the binary as base64. This avoids
+    # depending on WSL's /mnt/c or /mnt/d DrvFS mounts, which can be stalled
+    # even while the distro and compiler themselves are healthy.
+    $compileCommand = @'
+set -e
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT
+aarch64-linux-gnu-gcc {0} -x c -o "$tmp" -
+base64 -w0 "$tmp"
+'@ -f $CompilerArguments
+    $sourceText = [IO.File]::ReadAllText($Source)
+    $encoded = ($sourceText | & wsl.exe -d $Distro --exec bash -lc $compileCommand) -join ""
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($encoded)) {
+        throw "Failed to cross-compile $Description"
+    }
+    try {
+        [IO.File]::WriteAllBytes($Binary, [Convert]::FromBase64String($encoded))
+    }
+    catch {
+        throw "Failed to receive the compiled ${Description}: $($_.Exception.Message)"
+    }
 }
 
-$kmsSourceWsl = ConvertTo-WslPath $kmsSource
-$kmsBinaryWsl = ConvertTo-WslPath $kmsBinary
-& wsl.exe -d $Distro --exec aarch64-linux-gnu-gcc -O2 -Wall -Wextra `
-    -I /usr/include/drm -o $kmsBinaryWsl $kmsSourceWsl
-if ($LASTEXITCODE -ne 0) {
-    throw "Failed to cross-compile the DRM/KMS presenter"
-}
-
-$cameraSourceWsl = ConvertTo-WslPath $cameraSource
-$cameraBinaryWsl = ConvertTo-WslPath $cameraBinary
-& wsl.exe -d $Distro --exec aarch64-linux-gnu-gcc -O2 -Wall -Wextra `
-    -o $cameraBinaryWsl $cameraSourceWsl
-if ($LASTEXITCODE -ne 0) {
-    throw "Failed to cross-compile the camera preview helper"
-}
-
-$hapticSourceWsl = ConvertTo-WslPath $hapticSource
-$hapticBinaryWsl = ConvertTo-WslPath $hapticBinary
-& wsl.exe -d $Distro --exec aarch64-linux-gnu-gcc -O2 -Wall -Wextra `
-    -o $hapticBinaryWsl $hapticSourceWsl
-if ($LASTEXITCODE -ne 0) {
-    throw "Failed to cross-compile the haptics helper"
-}
+Build-WslArm64 $kmsSource $kmsBinary `
+    "-O2 -Wall -Wextra -I /usr/include/drm" "the DRM/KMS presenter"
+Build-WslArm64 $cameraSource $cameraBinary `
+    "-O2 -Wall -Wextra" "the camera preview helper"
+Build-WslArm64 $hapticSource $hapticBinary `
+    "-O2 -Wall -Wextra" "the haptics helper"
 
 if (!(Test-Path -LiteralPath $IdentityFile)) {
     $defaultIdentity = Join-Path $env:USERPROFILE ".ssh\id_ed25519"
