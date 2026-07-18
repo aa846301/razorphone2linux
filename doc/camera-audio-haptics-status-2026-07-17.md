@@ -1,5 +1,16 @@
 # Camera, audio, and haptics status (2026-07-17)
 
+## Follow-up live audit of `v1.0.18` (2026-07-18)
+
+- Front S5K3H7 still fails before media registration. Debugfs proves CCI1 SDA
+  and SCL are correctly muxed to GPIO19/GPIO20, and the earlier trace already
+  proved VANA, VDIG, VIO, MCLK2 and reset become active. The failure is a CCI1
+  queue timeout followed by `-ENXIO`, not a control-panel error.
+- The factory sensor binary selects `I2C_FAST_MODE` (`1`, 400 kHz), but the
+  port inherited SDM845's 1 MHz FAST_PLUS default for `cci_i2c1`. The DTS now
+  overrides CCI1 to 400 kHz. This requires a new boot image and remains pending
+  hardware validation.
+
 ## Live audit of `v1.0.17` (2026-07-18)
 
 - Rear IMX363 probes and the complete sensor-to-`/dev/video0` graph streams.

@@ -37,3 +37,9 @@ matching kernel/rootfs image is installed:
   one `FF_RUMBLE` effect with `fftest`.
 - `phone-test-audio.sh` lists ALSA PCMs and plays one stereo sine-test pass. An
   explicit ALSA PCM name can be passed as its first argument.
+
+### Front camera
+
+`phone-front-camera-state.sh` captures the live CCI1, GPIO9/GPIO15,
+regulator, and S5K3H7 probe state. Run it as root on the phone after a failed
+front-camera probe so the failure can be separated from the control panel.

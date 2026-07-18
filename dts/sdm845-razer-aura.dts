@@ -468,6 +468,12 @@
 
 &cci_i2c1 {
 	status = "okay";
+	/*
+	 * The factory Chicony S5K3H7 module requests I2C_FAST_MODE. Do not
+	 * inherit SDM845's 1 MHz FAST_PLUS default: stock CamX probes it at
+	 * 400 kHz.
+	 */
+	clock-frequency = <400000>;
 
 	front_camera: camera@10 {
 		compatible = "samsung,s5k3h7";
